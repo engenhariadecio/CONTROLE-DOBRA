@@ -205,6 +205,14 @@ textarea.input{resize:vertical;min-height:70px;}
 
 /* ── Filtros ────────────────────────────────────────────────────── */
 .filtros{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px;}
+.live-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--green);margin:0 5px 0 8px;box-shadow:0 0 0 0 rgba(43,164,92,.5);vertical-align:middle;}
+.live-dot.pulse{animation:livepulse .6s ease;}
+@keyframes livepulse{0%{box-shadow:0 0 0 0 rgba(43,164,92,.55);}100%{box-shadow:0 0 0 10px rgba(43,164,92,0);}}
+.live-txt{font-size:.72rem;font-weight:800;color:var(--green);text-transform:uppercase;letter-spacing:.08em;}
+.turno-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;}
+.turno-row .input{width:auto;flex:0 0 auto;padding:9px 12px;}
+.turno-row .input[type=time]{min-width:120px;}
+.turno-row .input:first-child{flex:1 1 160px;}
 .filtro-item{display:flex;flex-direction:column;gap:5px;}
 .filtro-item .label{margin:0;}
 .filtro-item .input{min-width:135px;padding:9px 12px;font-size:.9rem;}

@@ -1,12 +1,15 @@
-# Controle de Produtividade — Dobra
+# Controle de Produção (MES)
 
-Sistema web para monitorar o **tempo de produção** de um setor. O operador
-escolhe a máquina, **inicia** o cronômetro, aponta a **OP**, **pausa** nos
-intervalos e **finaliza** com a quantidade produzida. A gerência acompanha
-tudo por um **dashboard**, e o **admin** cadastra máquinas, usuários e setores.
+Sistema web de **controle integrado de produção** para todos os setores da
+fábrica (Corte, Dobra, Solda, Estamparia, Acabamento…). O operador escolhe a
+máquina, **inicia** o cronômetro, **bipa ou digita a OP**, **pausa** nos
+intervalos (café, laboral, almoço, janta…) e **finaliza** com a quantidade
+produzida. A gerência acompanha em um **painel de visualização em tempo real**
+(histórico + produção ao vivo + OEE), e o **admin** configura e ajusta tudo.
 
-Foi desenhado para **Dobra**, mas serve igual para **Corte, Estamparia,
-Solda, Acabamento** — basta cadastrar as máquinas de cada setor.
+Cada **usuário pertence a um setor** (sua área), e as máquinas são cadastradas
+por setor — então o mesmo sistema atende todos os setores de forma integrada,
+sem misturar os dados.
 
 ---
 
@@ -22,27 +25,33 @@ Solda, Acabamento** — basta cadastrar as máquinas de cada setor.
   é **descontado** do tempo produtivo.
 - Finalizar → quantidade produzida, refugo e observação.
 
-**Painel gerencial** (`/dashboard`)
+**Painel gerencial** (`/dashboard`) — **somente visualização**
+- Para os usuários com acesso **Gerencial**. Não edita nada: é um monitor.
+- **Atualiza sozinho a cada 20s** (produção em tempo real, estilo MES).
 - KPIs: OPs, peças, horas produtivas, horas em pausa, eficiência, peças/hora,
   refugo e quantos apontamentos estão em andamento agora.
 - **OEE** em destaque (medidor + os 3 pilares: Disponibilidade, Desempenho e
   Qualidade), com a meta de OEE como referência.
 - Gráficos de produção por dia e de motivos de pausa.
-- Rankings por operador e por máquina (com coluna de OEE).
-- Tabela dos últimos apontamentos + **exportação para Excel** (com colunas de
-  meta, disponibilidade, desempenho, qualidade e OEE).
-- Filtros por período (hoje, ontem, 7/30 dias, mês) e por setor.
+- Rankings por operador e por máquina (com OEE) e tabela ao vivo do que está
+  em andamento agora.
+- Filtros por período, **por setor** e **por turno**; exportação para Excel.
 
-**Administração** (edita e ajusta tudo)
-- `/admin/maquinas` — cadastro de máquinas (nome, código, setor, ativa, ordem
-  e **meta de peças/hora** — a capacidade nominal usada no Desempenho do OEE).
-- `/admin/usuarios` — usuários e acessos: **Operador** (aponta), **Gerencial**
-  (vê dashboard e OEE) e **Administração** (configura tudo). É aqui que você
-  define quem enxerga o OEE e o painel gerencial.
-- `/admin/config` — setores, setor em foco, motivos de pausa, **meta de
-  peças/hora padrão**, **meta de OEE (%)** e reset.
-- No dashboard, o admin pode **editar ou excluir** cada apontamento (corrigir
-  OP, quantidade, refugo etc.). Toda alteração fica registrada em auditoria.
+**Administração** (configura e ajusta tudo)
+- `/admin/maquinas` — máquinas por setor (nome, código, setor, ativa, ordem e
+  **meta de peças/hora** — capacidade nominal usada no Desempenho do OEE).
+- `/admin/usuarios` — usuários por **área/setor** e acessos: **Operador**
+  (aponta na sua área), **Gerencial** (visualiza o dashboard/OEE da sua área) e
+  **Administração** (tudo). É aqui que você define quem enxerga o painel
+  gerencial e o OEE, e a que setor cada pessoa pertence.
+- `/admin/config` — setores, setor em foco, **motivos de pausa** (café,
+  laboral, almoço, janta…), **turnos** (3 turnos com horários configuráveis,
+  aceita virada de meia-noite), **meta de peças/hora padrão**, **meta de OEE
+  (%)** e reset.
+- `/admin/apontamentos` — consulta com filtros (período, setor, turno) e
+  **edição/exclusão** de cada registro de produção. Toda alteração fica
+  registrada na auditoria. (A edição fica aqui, no admin — o painel gerencial é
+  só visualização.)
 
 ---
 

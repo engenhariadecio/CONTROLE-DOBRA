@@ -15,7 +15,7 @@
 
 <div class="tabela-wrap">
   <table class="tbl">
-    <thead><tr><th>Nome</th><th>Login</th><th>Matrícula</th><th>Acessos</th><th>Status</th><th class="right">Ações</th></tr></thead>
+    <thead><tr><th>Nome</th><th>Login</th><th>Matrícula</th><th>Área/Setor</th><th>Acessos</th><th>Status</th><th class="right">Ações</th></tr></thead>
     <tbody id="corpo"></tbody>
   </table>
 </div>
@@ -45,6 +45,13 @@
         <div class="field">
           <label class="label">Senha <span id="senhaHint" class="muted"></span></label>
           <input class="input" id="uSenha" type="text" placeholder="Definir senha" autocomplete="new-password">
+        </div>
+        <div class="field">
+          <label class="label">Área / Setor <span class="hint">(deixe "Todos" p/ admin)</span></label>
+          <select class="input" id="uSetor">
+            <option value="">Todos os setores</option>
+            {% for s in setores %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+          </select>
         </div>
         <div class="field field-full">
           <label class="label">Acessos *</label>
@@ -84,11 +91,13 @@ function render(){
   const q=(document.getElementById('busca').value||'').toLowerCase();
   const rows=USERS.filter(u=>!q || u.nome.toLowerCase().includes(q) || u.login.toLowerCase().includes(q));
   const corpo=document.getElementById('corpo');
-  if(!rows.length){ corpo.innerHTML='<tr><td colspan="6"><div class="empty"><i class="bi bi-people"></i><p>Nenhum usuário.</p></div></td></tr>'; return; }
+  if(!rows.length){ corpo.innerHTML='<tr><td colspan="7"><div class="empty"><i class="bi bi-people"></i><p>Nenhum usuário.</p></div></td></tr>'; return; }
   corpo.innerHTML=rows.map(u=>{
     const acc=(u.perfis||[]).map(p=>'<span class="tag '+(TAGCLS[p]||'tag-slate')+'">'+(LABEL[p]||p)+'</span>').join(' ');
     return '<tr><td><b>'+esc(u.nome)+'</b></td><td>'+esc(u.login)+'</td>'
-      +'<td>'+(u.matricula?esc(u.matricula):'—')+'</td><td>'+acc+'</td>'
+      +'<td>'+(u.matricula?esc(u.matricula):'—')+'</td>'
+      +'<td>'+(u.setor?('<span class="tag tag-blue">'+esc(u.setor)+'</span>'):'<span class="muted">Todos</span>')+'</td>'
+      +'<td>'+acc+'</td>'
       +'<td>'+(u.ativo?'<span class="tag tag-green">Ativo</span>':'<span class="tag tag-slate">Inativo</span>')+'</td>'
       +'<td class="right nowrap"><button class="btn btn-ghost btn-sm" onclick="editar('+u.id+')"><i class="bi bi-pencil"></i></button> '
       +(u.login==='admin'||u.login===EU?'' :'<button class="btn btn-ghost btn-sm" onclick="excluir('+u.id+',\''+esc(u.nome).replace(/\'/g,"")+'\')"><i class="bi bi-trash"></i></button>')
@@ -115,6 +124,7 @@ function novoUsuario(){
   document.getElementById('tituloUser').textContent='Novo usuário';
   document.getElementById('uId').value='';
   ['uNome','uMatricula','uLogin','uSenha'].forEach(i=>document.getElementById(i).value='');
+  document.getElementById('uSetor').value='';
   document.getElementById('uLogin').disabled=false;
   document.getElementById('senhaHint').textContent='(obrigatória)';
   setAcessos(['operador']);
@@ -130,6 +140,7 @@ function editar(id){
   document.getElementById('uLogin').value=u.login;
   document.getElementById('uLogin').disabled=(u.login==='admin');
   document.getElementById('uSenha').value='';
+  document.getElementById('uSetor').value=u.setor||'';
   document.getElementById('senhaHint').textContent='(deixe em branco para manter)';
   setAcessos(u.perfis||[]);
   const sw=document.getElementById('uAtivo'); sw.classList.toggle('on', !!u.ativo);
@@ -149,6 +160,7 @@ document.getElementById('btnSalvar').addEventListener('click', async(e)=>{
       id:document.getElementById('uId').value||0,
       nome:nome, login:login,
       matricula:document.getElementById('uMatricula').value.trim(),
+      setor:document.getElementById('uSetor').value,
       senha:document.getElementById('uSenha').value,
       perfis:acessos,
       ativo:document.getElementById('uAtivo').classList.contains('on'),

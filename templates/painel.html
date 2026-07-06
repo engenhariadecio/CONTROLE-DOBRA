@@ -6,7 +6,16 @@
     <div class="section-title"><i class="bi bi-grid-3x3-gap-fill"></i>Painel do Operador</div>
     <div class="section-sub">Toque numa máquina para iniciar, pausar ou finalizar a produção</div>
   </div>
-  <span class="pill-setor" id="pillSetor"><i class="bi bi-bounding-box"></i><span id="setorNome">Dobra</span></span>
+  {% if setores and setores|length > 1 %}
+  <div class="filtro-item" style="min-width:190px;">
+    <label class="label">Setor</label>
+    <select class="input" id="selSetor" onchange="trocarSetor()">
+      {% for s in setores %}<option {% if s==meu_setor %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select>
+  </div>
+  {% else %}
+  <span class="pill-setor" id="pillSetor"><i class="bi bi-bounding-box"></i><span id="setorNome">{{ meu_setor }}</span></span>
+  {% endif %}
 </div>
 
 <div id="grid" class="maq-grid">
@@ -157,15 +166,22 @@ function parseIso(s){ return s ? new Date(s).getTime() : 0; }
 function abrir(id){ document.getElementById(id).classList.add('show'); }
 function fechar(id){ document.getElementById(id).classList.remove('show'); }
 
+function setorSelecionado(){
+  const sel = document.getElementById('selSetor');
+  return sel ? sel.value : '';
+}
+function trocarSetor(){ carregar(); }
+
 async function carregar(){
   try{
-    const j = await api('/api/maquinas');
+    const s = setorSelecionado();
+    const j = await api('/api/maquinas' + (s?('?setor='+encodeURIComponent(s)):''));
     ESTADO.maquinas = j.maquinas || [];
     ESTADO.motivos = j.motivos || [];
     ESTADO.setor = j.setor || '';
     ESTADO.offset = parseIso(j.agora) - Date.now();
     SNAPSHOT_MS = parseIso(j.agora);       // momento do servidor em que pausa_seg foi medido
-    document.getElementById('setorNome').textContent = j.setor || '';
+    document.getElementById('setorNome') && (document.getElementById('setorNome').textContent = j.setor || '');
     render();
   }catch(e){ toast(e.message,'err'); }
 }

@@ -54,6 +54,13 @@
   </div>
 </div>
 
+<div class="card card-pad mt">
+  <div class="card-title"><i class="bi bi-clock-history"></i>Turnos</div>
+  <p class="hint" style="margin-bottom:12px;">Defina os turnos e seus horários (HH:MM, horário local). O turno de cada apontamento é calculado pelo horário de início. Turnos que viram a meia-noite são aceitos (ex.: 22:00 → 06:00).</p>
+  <div id="turnosLista"></div>
+  <button class="btn btn-ghost btn-sm mt" onclick="addTurno()"><i class="bi bi-plus-lg"></i>Adicionar turno</button>
+</div>
+
 <div class="flex mt" style="justify-content:flex-end;">
   <button class="btn btn-primary btn-lg" id="btnSalvar"><i class="bi bi-check-lg"></i>Salvar configurações</button>
 </div>
@@ -75,6 +82,21 @@ let MOTIVOS = {{ motivos | tojson }};
 let SETOR_ATIVO = '{{ setor_ativo }}';
 const META_PPH_PADRAO = {{ meta_pph_padrao | tojson }};
 const META_OEE = {{ meta_oee | tojson }};
+let TURNOS = {{ turnos | tojson }};
+
+function renderTurnos(){
+  const box=document.getElementById('turnosLista');
+  box.innerHTML = TURNOS.map((t,i)=>
+    '<div class="turno-row">'
+    +'<input class="input" placeholder="Nome" value="'+esc(t.nome||'')+'" oninput="TURNOS['+i+'].nome=this.value">'
+    +'<input class="input" type="time" value="'+esc(t.inicio||'')+'" oninput="TURNOS['+i+'].inicio=this.value">'
+    +'<span class="muted">até</span>'
+    +'<input class="input" type="time" value="'+esc(t.fim||'')+'" oninput="TURNOS['+i+'].fim=this.value">'
+    +'<button class="btn btn-ghost btn-sm" onclick="remTurno('+i+')"><i class="bi bi-trash"></i></button>'
+    +'</div>').join('') || '<p class="hint">Nenhum turno.</p>';
+}
+function addTurno(){ TURNOS.push({nome:'Novo turno',inicio:'06:00',fim:'14:00'}); renderTurnos(); }
+function remTurno(i){ TURNOS.splice(i,1); renderTurnos(); }
 
 function chip(txt, tipo){
   return '<span class="chip-x">'+esc(txt)+'<button onclick="rem'+tipo+'(\''+esc(txt).replace(/\'/g,"")+'\')"><i class="bi bi-x"></i></button></span>';
@@ -108,8 +130,10 @@ document.getElementById('btnSalvar').addEventListener('click', async(e)=>{
       setores:SETORES, motivos_pausa:MOTIVOS, setor_ativo:document.getElementById('setorAtivo').value,
       meta_pph_padrao:document.getElementById('metaPph').value.trim()||0,
       meta_oee:document.getElementById('metaOee').value.trim()||0,
+      turnos:TURNOS,
     });
     SETORES=j.setores; MOTIVOS=j.motivos_pausa; SETOR_ATIVO=j.setor_ativo;
+    if(j.turnos){ TURNOS=j.turnos; renderTurnos(); }
     document.getElementById('metaPph').value = j.meta_pph_padrao||'';
     document.getElementById('metaOee').value = j.meta_oee||'';
     renderSetores(); renderMotivos();
@@ -132,6 +156,7 @@ document.getElementById('btnReset').addEventListener('click', async(e)=>{
 
 document.getElementById('metaPph').value = META_PPH_PADRAO || '';
 document.getElementById('metaOee').value = META_OEE || '';
+renderTurnos();
 renderSetores(); renderMotivos();
 </script>
 {% endblock %}

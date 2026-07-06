@@ -1,0 +1,174 @@
+{% extends 'base.html' %}
+{% block title %}Apontamentos{% endblock %}
+{% block page_class %}page-wide{% endblock %}
+{% block content %}
+<div class="section-head">
+  <div>
+    <div class="section-title"><i class="bi bi-card-checklist"></i>Apontamentos</div>
+    <div class="section-sub">Consultar, corrigir e excluir registros de produção — toda alteração fica na auditoria</div>
+  </div>
+  <a class="btn btn-primary btn-sm" id="btnExcel"><i class="bi bi-file-earmark-excel-fill"></i>Excel</a>
+</div>
+
+<div class="filtros">
+  <div class="filtro-item"><label class="label">De</label><input type="date" class="input" id="de"></div>
+  <div class="filtro-item"><label class="label">Até</label><input type="date" class="input" id="ate"></div>
+  <div class="filtro-item"><label class="label">Setor</label>
+    <select class="input" id="setor">{% for s in setores %}<option {% if s==setor_ativo %}selected{% endif %}>{{ s }}</option>{% endfor %}</select>
+  </div>
+  <div class="filtro-item"><label class="label">Turno</label>
+    <select class="input" id="turno"><option value="">Todos os turnos</option>{% for t in turnos %}<option>{{ t.nome }}</option>{% endfor %}</select>
+  </div>
+  <div class="filtro-item grow"><label class="label">Períodos rápidos</label>
+    <div class="chips-rapidos">
+      <button class="chip" data-p="hoje">Hoje</button>
+      <button class="chip" data-p="ontem">Ontem</button>
+      <button class="chip" data-p="7">7 dias</button>
+      <button class="chip" data-p="30">30 dias</button>
+      <button class="chip" data-p="mes">Este mês</button>
+    </div>
+  </div>
+</div>
+
+<div id="conteudo"><div class="center-load"><span class="spin"></span></div></div>
+
+<!-- Modal editar -->
+<div class="modal-bg" id="mEditAp">
+  <div class="modal">
+    <div class="modal-head">
+      <h3><i class="bi bi-pencil-square"></i>Editar apontamento</h3>
+      <button class="modal-x" onclick="fechar('mEditAp')"><i class="bi bi-x"></i></button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="eaId">
+      <div class="alert alert-info" style="margin-bottom:14px;"><i class="bi bi-cpu-fill"></i><span id="eaMaq">—</span></div>
+      <div class="form-row">
+        <div class="field"><label class="label">OP</label><input class="input" id="eaOp" autocomplete="off"></div>
+        <div class="field"><label class="label">Código</label><input class="input" id="eaCodigo" autocomplete="off"></div>
+        <div class="field"><label class="label">Operador</label><input class="input" id="eaOper" autocomplete="off"></div>
+        <div class="field"><label class="label">Matrícula</label><input class="input" id="eaMatricula" autocomplete="off"></div>
+        <div class="field field-full"><label class="label">Descrição</label><input class="input" id="eaDesc" autocomplete="off"></div>
+        <div class="field"><label class="label">Qtd prevista</label><input class="input" id="eaPrev" inputmode="numeric" autocomplete="off"></div>
+        <div class="field"><label class="label">Qtd produzida</label><input class="input" id="eaProd" inputmode="numeric" autocomplete="off"></div>
+        <div class="field"><label class="label">Refugo</label><input class="input" id="eaRef" inputmode="numeric" autocomplete="off"></div>
+        <div class="field"><label class="label">Meta pç/h</label><input class="input" id="eaMeta" inputmode="decimal" autocomplete="off"></div>
+        <div class="field field-full"><label class="label">Observação</label><input class="input" id="eaObs" autocomplete="off"></div>
+      </div>
+      <p class="hint">Tempo produtivo e pausas não mudam aqui — ajuste quantidades, OP e dados. OEE é recalculado automaticamente.</p>
+    </div>
+    <div class="modal-foot" style="justify-content:space-between;">
+      <button class="btn btn-red" id="eaExcluir"><i class="bi bi-trash"></i>Excluir</button>
+      <div class="flex">
+        <button class="btn btn-ghost" onclick="fechar('mEditAp')">Cancelar</button>
+        <button class="btn btn-primary" id="eaSalvar"><i class="bi bi-check-lg"></i>Salvar</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let LINHAS = [];
+function abrir(id){document.getElementById(id).classList.add('show');}
+function fechar(id){document.getElementById(id).classList.remove('show');}
+function isoLocal(d){ return d.toISOString().slice(0,10); }
+function fmt(n){ return (n==null?0:n).toLocaleString('pt-BR'); }
+
+function setPeriodo(p){
+  const hoje=new Date(); let de=new Date(hoje), ate=new Date(hoje);
+  if(p==='ontem'){de.setDate(de.getDate()-1);ate.setDate(ate.getDate()-1);}
+  else if(p==='7'){de.setDate(de.getDate()-6);}
+  else if(p==='30'){de.setDate(de.getDate()-29);}
+  else if(p==='mes'){de=new Date(hoje.getFullYear(),hoje.getMonth(),1);}
+  document.getElementById('de').value=isoLocal(de);
+  document.getElementById('ate').value=isoLocal(ate);
+  document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('ativo',c.dataset.p===p));
+  carregar();
+}
+
+function query(){
+  const de=document.getElementById('de').value, ate=document.getElementById('ate').value;
+  const setor=document.getElementById('setor').value, turno=document.getElementById('turno').value;
+  return `?de=${de}&ate=${ate}&setor=${encodeURIComponent(setor)}&turno=${encodeURIComponent(turno)}`;
+}
+
+async function carregar(){
+  const q=query();
+  document.getElementById('btnExcel').href='/api/download/apontamentos'+q;
+  const box=document.getElementById('conteudo');
+  try{
+    const j=await api('/api/admin/apontamentos'+q);
+    LINHAS=j.apontamentos||[];
+    box.innerHTML=tabela(LINHAS);
+  }catch(e){ box.innerHTML='<div class="empty"><i class="bi bi-exclamation-circle"></i><p>'+esc(e.message)+'</p></div>'; }
+}
+
+function tabela(rows){
+  if(!rows.length) return '<div class="empty"><i class="bi bi-inbox"></i><p>Nenhum apontamento no período/filtro.</p></div>';
+  return '<div class="tabela-wrap"><table class="tbl"><thead><tr>'
+    +'<th>Início</th><th>Turno</th><th>Máquina</th><th>OP</th><th>Operador</th>'
+    +'<th class="td-num">Prevista</th><th class="td-num">Produzida</th><th class="td-num">Refugo</th>'
+    +'<th class="td-num">T. produtivo</th><th class="td-num">OEE</th><th class="right">Ações</th></tr></thead><tbody>'
+    + rows.map(r=>'<tr>'
+      +'<td class="nowrap">'+esc(r.inicio)+'</td><td>'+esc(r.turno||'—')+'</td><td>'+esc(r.maquina_nome)+'</td>'
+      +'<td><b>'+esc(r.op)+'</b></td><td>'+esc(r.operador_nome)+'</td>'
+      +'<td class="td-num">'+fmt(r.quantidade_prevista)+'</td><td class="td-num">'+fmt(r.quantidade_produzida)+'</td>'
+      +'<td class="td-num">'+fmt(r.refugo)+'</td><td class="td-num mono">'+hms(r.producao_seg)+'</td>'
+      +'<td class="td-num">'+(r.oee==null?'—':(String(r.oee).replace('.',',')+'%'))+'</td>'
+      +'<td class="right nowrap"><button class="btn btn-ghost btn-sm" onclick="editarAp('+r.id+')"><i class="bi bi-pencil"></i></button></td>'
+      +'</tr>').join('')
+    + '</tbody></table></div>';
+}
+
+function editarAp(id){
+  const r=LINHAS.find(x=>x.id===id); if(!r) return;
+  const set=(k,v)=>{const el=document.getElementById(k); if(el) el.value=(v==null?'':v);};
+  document.getElementById('eaId').value=r.id;
+  document.getElementById('eaMaq').textContent=r.maquina_nome+' · '+r.inicio+(r.turno?(' · '+r.turno):'');
+  set('eaOp',r.op); set('eaCodigo',r.codigo); set('eaOper',r.operador_nome);
+  set('eaMatricula',r.operador_matricula); set('eaDesc',r.descricao);
+  set('eaPrev',r.quantidade_prevista); set('eaProd',r.quantidade_produzida);
+  set('eaRef',r.refugo); set('eaMeta',r.meta_pph); set('eaObs',r.observacao);
+  abrir('mEditAp');
+}
+
+document.getElementById('eaSalvar').addEventListener('click', async(e)=>{
+  const id=+document.getElementById('eaId').value;
+  e.target.disabled=true;
+  try{
+    await api('/api/admin/apontamento/salvar','POST',{
+      id:id,
+      op:document.getElementById('eaOp').value.trim(),
+      codigo:document.getElementById('eaCodigo').value.trim(),
+      operador_nome:document.getElementById('eaOper').value.trim(),
+      operador_matricula:document.getElementById('eaMatricula').value.trim(),
+      descricao:document.getElementById('eaDesc').value.trim(),
+      quantidade_prevista:document.getElementById('eaPrev').value.trim()||0,
+      quantidade_produzida:document.getElementById('eaProd').value.trim()||0,
+      refugo:document.getElementById('eaRef').value.trim()||0,
+      meta_pph:document.getElementById('eaMeta').value.trim()||0,
+      observacao:document.getElementById('eaObs').value.trim(),
+    });
+    fechar('mEditAp'); toast('Apontamento atualizado','ok'); carregar();
+  }catch(err){ toast(err.message,'err'); }
+  finally{ e.target.disabled=false; }
+});
+
+document.getElementById('eaExcluir').addEventListener('click', async(e)=>{
+  const id=+document.getElementById('eaId').value;
+  if(!confirm('Excluir este apontamento? Não pode ser desfeito.')) return;
+  e.target.disabled=true;
+  try{
+    await api('/api/admin/apontamento/excluir','POST',{id:id});
+    fechar('mEditAp'); toast('Apontamento excluído','ok'); carregar();
+  }catch(err){ toast(err.message,'err'); }
+  finally{ e.target.disabled=false; }
+});
+
+document.querySelectorAll('.modal-bg').forEach(bg=>bg.addEventListener('click',ev=>{if(ev.target===bg)bg.classList.remove('show');}));
+document.querySelectorAll('.chip').forEach(c=>c.addEventListener('click',()=>setPeriodo(c.dataset.p)));
+['de','ate','setor','turno'].forEach(i=>document.getElementById(i).addEventListener('change',carregar));
+setPeriodo('hoje');
+</script>
+{% endblock %}

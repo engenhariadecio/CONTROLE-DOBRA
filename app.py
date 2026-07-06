@@ -82,6 +82,7 @@ class Usuario(Base):
     senha_hash = Column(String(255), nullable=False)
     perfil = Column(String(20), nullable=False)        # perfil principal
     perfis = Column(Text, default='')                  # "operador,gerencia,admin"
+    setor = Column(String(40), default='')             # área do usuário ('' = todos os setores)
     ativo = Column(Boolean, default=True)
 
     def acessos(self):
@@ -97,7 +98,8 @@ class Usuario(Base):
     def to_dict(self):
         return {'id': self.id, 'login': self.login, 'nome': self.nome,
                 'matricula': self.matricula or '', 'perfil': self.perfil,
-                'perfis': self.acessos(), 'ativo': bool(self.ativo)}
+                'perfis': self.acessos(), 'setor': self.setor or '',
+                'ativo': bool(self.ativo)}
 
 
 class Maquina(Base):
@@ -242,6 +244,7 @@ class Apontamento(Base):
         pph = round(qprod / (prod / 3600), 1) if prod > 0 and qprod else 0.0
         meta = self.meta_efetiva(meta_padrao)
         o = calc_oee(prod, pausa, qprod, self.refugo or 0, meta)
+        inicio_local = (self.inicio - timedelta(hours=FUSO_LOCAL_HORAS)) if self.inicio else None
         return {
             'id': self.id, 'estado': self.estado,
             'maquina_id': self.maquina_id, 'maquina_nome': self.maquina_nome,
@@ -251,6 +254,7 @@ class Apontamento(Base):
             'quantidade_prevista': self.quantidade_prevista or 0,
             'quantidade_produzida': qprod, 'refugo': self.refugo or 0,
             'inicio': fmt(self.inicio), 'inicio_iso': iso(self.inicio),
+            'turno': turno_de(inicio_local),
             'fim': fmt(self.fim), 'fim_iso': iso(self.fim),
             'producao_seg': round(prod, 1), 'producao_min': round(prod / 60, 1),
             'pausa_seg': round(pausa, 1), 'pausa_min': round(pausa / 60, 1),
@@ -293,7 +297,7 @@ class ApontamentoLog(Base):
 # ─────────────────────────────────────────────────────────────────────────────
 SETORES_PADRAO = ['Dobra', 'Corte', 'Estamparia', 'Solda', 'Acabamento']
 MOTIVOS_PAUSA_PADRAO = [
-    'Café', 'Almoço', 'Ginástica laboral', 'Banheiro',
+    'Café', 'Almoço', 'Janta', 'Ginástica laboral', 'Banheiro',
     'Manutenção', 'Falta de material', 'Setup / troca de ferramenta', 'Reunião',
 ]
 
@@ -355,6 +359,57 @@ def get_meta_oee():
         return float(META_OEE_PADRAO)
 
 
+# Turnos (3 turnos, iguais aos do sistema Banho). Horários locais HH:MM.
+TURNOS_PADRAO = [
+    {'nome': '1º turno', 'inicio': '06:01', 'fim': '15:30'},
+    {'nome': '2º turno', 'inicio': '15:31', 'fim': '00:00'},
+    {'nome': '3º turno', 'inicio': '00:01', 'fim': '06:00'},
+]
+
+
+def get_turnos():
+    t = cfg_get('turnos', TURNOS_PADRAO) or TURNOS_PADRAO
+    # saneia
+    out = []
+    for x in t:
+        try:
+            out.append({'nome': str(x.get('nome') or '').strip() or 'Turno',
+                        'inicio': str(x.get('inicio') or '00:00'),
+                        'fim': str(x.get('fim') or '00:00')})
+        except AttributeError:
+            continue
+    return out or TURNOS_PADRAO
+
+
+def _min_do_dia(hhmm):
+    try:
+        h, m = str(hhmm).split(':')
+        return int(h) * 60 + int(m)
+    except (ValueError, TypeError):
+        return 0
+
+
+def turno_de(dt_local):
+    """Nome do turno de um datetime LOCAL, tratando turno que vira a meia-noite."""
+    if not dt_local:
+        return ''
+    minutos = dt_local.hour * 60 + dt_local.minute
+    # 00:00 exato conta como fim do dia (pertence ao turno que termina à meia-noite)
+    mm = 1440 if minutos == 0 else minutos
+    for t in get_turnos():
+        ini = _min_do_dia(t['inicio'])
+        fim = _min_do_dia(t['fim'])
+        if fim == 0:
+            fim = 24 * 60  # 00:00 = fim do dia
+        if ini <= fim:
+            if ini <= mm <= fim:
+                return t['nome']
+        else:  # vira a meia-noite (ex.: 22:00–06:00)
+            if mm >= ini or mm <= fim:
+                return t['nome']
+    return ''
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Bootstrap: cria tabelas e semeia dados iniciais
 # ─────────────────────────────────────────────────────────────────────────────
@@ -365,6 +420,7 @@ def _garantir_colunas():
         'usuarios': {
             'matricula': "VARCHAR(50) DEFAULT ''",
             'perfis': "TEXT DEFAULT ''",
+            'setor': "VARCHAR(40) DEFAULT ''",
             'ativo': 'BOOLEAN DEFAULT TRUE',
         },
         'maquinas': {
@@ -404,7 +460,7 @@ def bootstrap():
             db.add(Usuario(
                 login='operador', nome='Operador Dobra',
                 senha_hash=generate_password_hash('123456'),
-                perfil='operador', perfis='operador', ativo=True))
+                perfil='operador', perfis='operador', setor='Dobra', ativo=True))
         # Máquinas de exemplo (Dobra)
         if db.query(Maquina).count() == 0:
             for i in range(1, 7):
@@ -425,6 +481,8 @@ def bootstrap():
         cfg_set('meta_pph_padrao', META_PPH_PADRAO)
     if cfg_get('meta_oee') is None:
         cfg_set('meta_oee', META_OEE_PADRAO)
+    if cfg_get('turnos') is None:
+        cfg_set('turnos', TURNOS_PADRAO)
 
 
 with app.app_context():
@@ -481,7 +539,13 @@ def _inj():
     return {
         'nome': session.get('nome'),
         'setor_ativo': get_setor_ativo(),
+        'usuario_setor': session.get('setor') or '',
     }
+
+
+def setor_do_usuario():
+    """Setor padrão do usuário logado: o setor cadastrado, senão o setor ativo global."""
+    return (session.get('setor') or '').strip() or get_setor_ativo()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -512,6 +576,7 @@ def login():
             session['perfil'] = u.perfil
             session['perfis'] = u.acessos()
             session['matricula'] = u.matricula or ''
+            session['setor'] = u.setor or ''
         finally:
             db.close()
         return redirect(url_for('selecionar'))
@@ -560,7 +625,15 @@ def ir(perfil):
 @app.route('/painel')
 @perfil_obrigatorio('operador')
 def painel():
-    return render_template('painel.html', motivos=get_motivos_pausa())
+    acessos = session.get('perfis') or [session.get('perfil')]
+    meu_setor = (session.get('setor') or '').strip()
+    # Usuário sem setor fixo (ex.: admin) pode escolher qualquer setor.
+    if meu_setor and 'admin' not in acessos:
+        setores = [meu_setor]
+    else:
+        setores = get_setores()
+    return render_template('painel.html', motivos=get_motivos_pausa(),
+                           setores=setores, meu_setor=meu_setor or get_setor_ativo())
 
 
 @app.route('/dashboard')
@@ -568,8 +641,15 @@ def painel():
 @perfil_obrigatorio('gerencia', 'admin')
 def dashboard():
     acessos = session.get('perfis') or [session.get('perfil')]
-    return render_template('dashboard.html', config_setores=get_setores(),
-                           eh_admin=('admin' in acessos))
+    meu_setor = (session.get('setor') or '').strip()
+    if meu_setor and 'admin' not in acessos and 'gerencia' in acessos:
+        setores = [meu_setor]           # gerência de área vê só o seu setor
+    else:
+        setores = get_setores()         # admin/gerência geral veem todos
+    return render_template('dashboard.html',
+                           config_setores=setores,
+                           turnos=get_turnos(),
+                           meu_setor=meu_setor or get_setor_ativo())
 
 
 @app.route('/admin/maquinas')
@@ -593,7 +673,7 @@ def admin_usuarios():
         dados = [u.to_dict() for u in usuarios]
     finally:
         db.close()
-    return render_template('admin_usuarios.html', usuarios=dados)
+    return render_template('admin_usuarios.html', usuarios=dados, setores=get_setores())
 
 
 @app.route('/admin/config')
@@ -603,8 +683,18 @@ def admin_config():
                            setores=get_setores(),
                            setor_ativo=get_setor_ativo(),
                            motivos=get_motivos_pausa(),
+                           turnos=get_turnos(),
                            meta_pph_padrao=get_meta_pph_padrao(),
                            meta_oee=get_meta_oee())
+
+
+@app.route('/admin/apontamentos')
+@perfil_obrigatorio('admin')
+def admin_apontamentos():
+    return render_template('admin_apontamentos.html',
+                           setores=get_setores(),
+                           turnos=get_turnos(),
+                           setor_ativo=get_setor_ativo())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -632,7 +722,7 @@ def api_operadores():
 @app.route('/api/maquinas')
 @api_login_obrigatorio
 def api_maquinas():
-    setor = request.args.get('setor') or get_setor_ativo()
+    setor = request.args.get('setor') or setor_do_usuario()
     agora = datetime.utcnow()
     db = Session()
     try:
@@ -863,7 +953,8 @@ def api_dashboard():
     hoje = (datetime.utcnow() - timedelta(hours=FUSO_LOCAL_HORAS)).date()
     di = _parse_data(request.args.get('de'), hoje)
     df = _parse_data(request.args.get('ate'), hoje)
-    setor = request.args.get('setor') or get_setor_ativo()
+    setor = request.args.get('setor') or setor_do_usuario()
+    turno = (request.args.get('turno') or '').strip()
     ini_utc, fim_utc = _intervalo_utc(di, df)
 
     db = Session()
@@ -875,6 +966,9 @@ def api_dashboard():
                      Apontamento.inicio <= fim_utc)
              .order_by(Apontamento.fim.desc()))
         finalizados = q.all()
+        if turno:
+            finalizados = [a for a in finalizados
+                           if turno_de(a.inicio - timedelta(hours=FUSO_LOCAL_HORAS)) == turno]
 
         # Em andamento (agora)
         em_andamento = (db.query(Apontamento)
@@ -981,6 +1075,7 @@ def api_dashboard():
         agora = datetime.utcnow()
         return jsonify({
             'setor': setor, 'de': di.isoformat(), 'ate': df.isoformat(),
+            'turno': turno, 'turnos': [t['nome'] for t in get_turnos()],
             'kpis': {
                 'ops': n,
                 'pecas': total_pecas,
@@ -1096,6 +1191,7 @@ def api_usuario_salvar():
         u.login = login_
         u.nome = nome
         u.matricula = (d.get('matricula') or '').strip()
+        u.setor = (d.get('setor') or '').strip()
         u.perfis = ','.join(perfis)
         u.perfil = 'admin' if 'admin' in perfis else ('gerencia' if 'gerencia' in perfis else 'operador')
         u.ativo = bool(d.get('ativo', True))
@@ -1151,11 +1247,25 @@ def api_config_salvar():
         cfg_set('meta_pph_padrao', max(0.0, _float(d.get('meta_pph_padrao'), 0)))
     if 'meta_oee' in d:
         cfg_set('meta_oee', min(100.0, max(0.0, _float(d.get('meta_oee'), META_OEE_PADRAO))))
+    if isinstance(d.get('turnos'), list):
+        turnos = []
+        for t in d['turnos']:
+            if not isinstance(t, dict):
+                continue
+            nome = (t.get('nome') or '').strip()
+            if not nome:
+                continue
+            turnos.append({'nome': nome,
+                           'inicio': (t.get('inicio') or '00:00').strip(),
+                           'fim': (t.get('fim') or '00:00').strip()})
+        if turnos:
+            cfg_set('turnos', turnos)
     return jsonify({'ok': True, 'setores': get_setores(),
                     'setor_ativo': get_setor_ativo(),
                     'motivos_pausa': get_motivos_pausa(),
                     'meta_pph_padrao': get_meta_pph_padrao(),
-                    'meta_oee': get_meta_oee()})
+                    'meta_oee': get_meta_oee(),
+                    'turnos': get_turnos()})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1180,7 +1290,8 @@ def download_apontamentos():
     hoje = (datetime.utcnow() - timedelta(hours=FUSO_LOCAL_HORAS)).date()
     di = _parse_data(request.args.get('de'), hoje)
     df = _parse_data(request.args.get('ate'), hoje)
-    setor = request.args.get('setor') or get_setor_ativo()
+    setor = request.args.get('setor') or setor_do_usuario()
+    turno = (request.args.get('turno') or '').strip()
     ini_utc, fim_utc = _intervalo_utc(di, df)
 
     db = Session()
@@ -1191,11 +1302,14 @@ def download_apontamentos():
                        Apontamento.inicio >= ini_utc,
                        Apontamento.inicio <= fim_utc)
                .order_by(Apontamento.inicio).all())
+        if turno:
+            aps = [a for a in aps
+                   if turno_de(a.inicio - timedelta(hours=FUSO_LOCAL_HORAS)) == turno]
         wb = Workbook()
         ws = wb.active
         ws.title = 'Apontamentos'
         meta_padrao = get_meta_pph_padrao()
-        cols = ['Data', 'Máquina', 'Operador', 'Matrícula', 'OP', 'Código',
+        cols = ['Data', 'Turno', 'Máquina', 'Operador', 'Matrícula', 'OP', 'Código',
                 'Descrição', 'Qtd prevista', 'Qtd produzida', 'Refugo',
                 'Início', 'Fim', 'Tempo produtivo', 'Pausa total',
                 'Nº pausas', 'Meta pç/h', 'Peças/hora',
@@ -1220,6 +1334,7 @@ def download_apontamentos():
             o = a.oee(meta_padrao=meta_padrao)
             ws.append([
                 dloc.strftime('%d/%m/%Y') if dloc else '',
+                turno_de(dloc) if dloc else '',
                 a.maquina_nome, a.operador_nome, a.operador_matricula or '',
                 a.op or '', a.codigo or '', a.descricao or '',
                 a.quantidade_prevista or 0, a.quantidade_produzida or 0, a.refugo or 0,
@@ -1231,7 +1346,7 @@ def download_apontamentos():
                 _pex(_pct(o['qualidade'])), _pex(_pct(o['oee'])),
                 a.observacao or '',
             ])
-        larguras = [12, 16, 20, 12, 12, 14, 30, 12, 13, 10, 10, 10, 15, 13,
+        larguras = [12, 10, 16, 20, 12, 12, 14, 30, 12, 13, 10, 10, 10, 15, 13,
                     10, 10, 11, 16, 15, 14, 10, 30]
         for i, w in enumerate(larguras, 1):
             ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
@@ -1249,6 +1364,35 @@ def download_apontamentos():
 # ─────────────────────────────────────────────────────────────────────────────
 # API — Admin: editar / excluir apontamentos (com auditoria)
 # ─────────────────────────────────────────────────────────────────────────────
+@app.route('/api/admin/apontamentos')
+@perfil_obrigatorio('admin')
+def api_admin_apontamentos():
+    hoje = (datetime.utcnow() - timedelta(hours=FUSO_LOCAL_HORAS)).date()
+    di = _parse_data(request.args.get('de'), hoje)
+    df = _parse_data(request.args.get('ate'), hoje)
+    setor = request.args.get('setor') or get_setor_ativo()
+    turno = (request.args.get('turno') or '').strip()
+    ini_utc, fim_utc = _intervalo_utc(di, df)
+    agora = datetime.utcnow()
+    meta_padrao = get_meta_pph_padrao()
+    db = Session()
+    try:
+        aps = (db.query(Apontamento)
+               .filter(Apontamento.estado == 'finalizado',
+                       Apontamento.setor == setor,
+                       Apontamento.inicio >= ini_utc,
+                       Apontamento.inicio <= fim_utc)
+               .order_by(Apontamento.inicio.desc()).all())
+        if turno:
+            aps = [a for a in aps
+                   if turno_de(a.inicio - timedelta(hours=FUSO_LOCAL_HORAS)) == turno]
+        return jsonify({'setor': setor, 'turno': turno,
+                        'de': di.isoformat(), 'ate': df.isoformat(),
+                        'apontamentos': [a.to_dict(agora, meta_padrao) for a in aps]})
+    finally:
+        db.close()
+
+
 _CAMPOS_EDITAVEIS = ['op', 'codigo', 'descricao', 'operador_nome', 'operador_matricula',
                      'quantidade_prevista', 'quantidade_produzida', 'refugo',
                      'meta_pph', 'observacao']
