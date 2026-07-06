@@ -113,6 +113,9 @@ button{font-family:inherit;}
   padding:12px 14px;font-size:1rem;font-family:inherit;color:var(--ink);background:#fff;transition:.16s;}
 .input:focus{outline:none;border-color:var(--brand-a);box-shadow:0 0 0 4px rgba(22,104,192,.12);}
 textarea.input{resize:vertical;min-height:70px;}
+.scan-field{position:relative;display:flex;align-items:center;}
+.scan-field > i{position:absolute;left:14px;font-size:1.35rem;color:var(--brand-a);pointer-events:none;}
+.scan-field .input{padding-left:46px;font-weight:700;letter-spacing:.02em;}
 .alert{display:flex;align-items:center;gap:9px;padding:11px 14px;border-radius:var(--r-sm);
   font-weight:600;font-size:.9rem;margin-bottom:16px;text-align:left;}
 .alert-err{background:var(--red-soft);color:var(--red);}

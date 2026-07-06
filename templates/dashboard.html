@@ -41,10 +41,47 @@
 <div id="conteudo">
   <div class="center-load"><span class="spin"></span></div>
 </div>
+
+{% if eh_admin %}
+<div class="modal-bg" id="mEditAp">
+  <div class="modal">
+    <div class="modal-head">
+      <h3><i class="bi bi-pencil-square"></i>Editar apontamento</h3>
+      <button class="modal-x" onclick="fechar('mEditAp')"><i class="bi bi-x"></i></button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="eaId">
+      <div class="alert alert-info" style="margin-bottom:14px;"><i class="bi bi-cpu-fill"></i><span id="eaMaq">—</span></div>
+      <div class="form-row">
+        <div class="field"><label class="label">OP</label><input class="input" id="eaOp" autocomplete="off"></div>
+        <div class="field"><label class="label">Código</label><input class="input" id="eaCodigo" autocomplete="off"></div>
+        <div class="field"><label class="label">Operador</label><input class="input" id="eaOper" autocomplete="off"></div>
+        <div class="field"><label class="label">Matrícula</label><input class="input" id="eaMatricula" autocomplete="off"></div>
+        <div class="field field-full"><label class="label">Descrição</label><input class="input" id="eaDesc" autocomplete="off"></div>
+        <div class="field"><label class="label">Qtd prevista</label><input class="input" id="eaPrev" inputmode="numeric" autocomplete="off"></div>
+        <div class="field"><label class="label">Qtd produzida</label><input class="input" id="eaProd" inputmode="numeric" autocomplete="off"></div>
+        <div class="field"><label class="label">Refugo</label><input class="input" id="eaRef" inputmode="numeric" autocomplete="off"></div>
+        <div class="field"><label class="label">Meta pç/h</label><input class="input" id="eaMeta" inputmode="decimal" autocomplete="off"></div>
+        <div class="field field-full"><label class="label">Observação</label><input class="input" id="eaObs" autocomplete="off"></div>
+      </div>
+      <p class="hint">O tempo produtivo e as pausas não mudam aqui — ajuste quantidades, OP e dados. Toda edição fica registrada na auditoria.</p>
+    </div>
+    <div class="modal-foot" style="justify-content:space-between;">
+      <button class="btn btn-red" id="eaExcluir"><i class="bi bi-trash"></i>Excluir</button>
+      <div class="flex">
+        <button class="btn btn-ghost" onclick="fechar('mEditAp')">Cancelar</button>
+        <button class="btn btn-primary" id="eaSalvar"><i class="bi bi-check-lg"></i>Salvar</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block extra_js %}
 <script>
+const EH_ADMIN = {{ (eh_admin | default(false)) | tojson }};
+let ULTIMOS = [];
 let charts = {};
 function destruirCharts(){ Object.values(charts).forEach(c=>{try{c.destroy();}catch(e){}}); charts={}; }
 
@@ -81,6 +118,7 @@ async function carregar(){
 
 function render(j){
   const k=j.kpis;
+  ULTIMOS = j.ultimos || [];
   const kpis = [
     {l:'OPs finalizadas', v:fmt(k.ops), ic:'bi-flag-fill', cls:''},
     {l:'Peças produzidas', v:fmt(k.pecas), ic:'bi-box-seam-fill', cls:'accent-green'},
@@ -179,12 +217,15 @@ function tabelaUltimos(rows){
   if(!rows || !rows.length) return '<div class="empty"><i class="bi bi-inbox"></i><p>Nenhum apontamento finalizado no período.</p></div>';
   return '<div class="tabela-wrap"><table class="tbl"><thead><tr>'
     +'<th>Início</th><th>Máquina</th><th>OP</th><th>Operador</th><th class="td-num">Prod.</th><th class="td-num">Refugo</th>'
-    +'<th class="td-num">T. produtivo</th><th class="td-num">Pausa</th><th class="td-num">Pçs/h</th><th class="td-num">OEE</th></tr></thead><tbody>'
+    +'<th class="td-num">T. produtivo</th><th class="td-num">Pausa</th><th class="td-num">Pçs/h</th><th class="td-num">OEE</th>'
+    + (EH_ADMIN?'<th class="right">Editar</th>':'') + '</tr></thead><tbody>'
     + rows.map(r=>'<tr><td class="nowrap">'+esc(r.inicio)+'</td><td>'+esc(r.maquina_nome)+'</td>'
       +'<td><b>'+esc(r.op)+'</b></td><td>'+esc(r.operador_nome)+'</td>'
       +'<td class="td-num">'+fmt(r.quantidade_produzida)+'</td><td class="td-num">'+fmt(r.refugo)+'</td>'
       +'<td class="td-num mono">'+hms(r.producao_seg)+'</td><td class="td-num mono">'+hms(r.pausa_seg)+'</td>'
-      +'<td class="td-num">'+r.pph+'</td><td class="td-num">'+tagOee(r.oee)+'</td></tr>').join('')
+      +'<td class="td-num">'+r.pph+'</td><td class="td-num">'+tagOee(r.oee)+'</td>'
+      + (EH_ADMIN?'<td class="right"><button class="btn btn-ghost btn-sm" onclick="editarAp('+r.id+')"><i class="bi bi-pencil"></i></button></td>':'')
+      +'</tr>').join('')
     + '</tbody></table></div>';
 }
 
@@ -251,6 +292,58 @@ const SETORES = {{ (config_setores if config_setores is defined else []) | tojso
   const lista = SETORES && SETORES.length ? SETORES : ['{{ setor_ativo }}'];
   sel.innerHTML = lista.map(s=>'<option '+(s==='{{ setor_ativo }}'?'selected':'')+'>'+esc(s)+'</option>').join('');
 })();
+
+// ── Admin: editar / excluir apontamento ──────────────────────────────
+function abrir(id){const el=document.getElementById(id); if(el) el.classList.add('show');}
+function fechar(id){const el=document.getElementById(id); if(el) el.classList.remove('show');}
+
+function editarAp(id){
+  if(!EH_ADMIN) return;
+  const r = ULTIMOS.find(x=>x.id===id); if(!r) return;
+  const set=(k,v)=>{const el=document.getElementById(k); if(el) el.value=(v==null?'':v);};
+  document.getElementById('eaId').value = r.id;
+  document.getElementById('eaMaq').textContent = r.maquina_nome + ' · início ' + r.inicio;
+  set('eaOp', r.op); set('eaCodigo', r.codigo); set('eaOper', r.operador_nome);
+  set('eaMatricula', r.operador_matricula); set('eaDesc', r.descricao);
+  set('eaPrev', r.quantidade_prevista); set('eaProd', r.quantidade_produzida);
+  set('eaRef', r.refugo); set('eaMeta', r.meta_pph); set('eaObs', r.observacao);
+  abrir('mEditAp');
+}
+
+if(EH_ADMIN){
+  document.getElementById('eaSalvar').addEventListener('click', async(e)=>{
+    const id = +document.getElementById('eaId').value;
+    e.target.disabled=true;
+    try{
+      await api('/api/admin/apontamento/salvar','POST',{
+        id:id,
+        op:document.getElementById('eaOp').value.trim(),
+        codigo:document.getElementById('eaCodigo').value.trim(),
+        operador_nome:document.getElementById('eaOper').value.trim(),
+        operador_matricula:document.getElementById('eaMatricula').value.trim(),
+        descricao:document.getElementById('eaDesc').value.trim(),
+        quantidade_prevista:document.getElementById('eaPrev').value.trim()||0,
+        quantidade_produzida:document.getElementById('eaProd').value.trim()||0,
+        refugo:document.getElementById('eaRef').value.trim()||0,
+        meta_pph:document.getElementById('eaMeta').value.trim()||0,
+        observacao:document.getElementById('eaObs').value.trim(),
+      });
+      fechar('mEditAp'); toast('Apontamento atualizado','ok'); carregar();
+    }catch(err){ toast(err.message,'err'); }
+    finally{ e.target.disabled=false; }
+  });
+  document.getElementById('eaExcluir').addEventListener('click', async(e)=>{
+    const id = +document.getElementById('eaId').value;
+    if(!confirm('Excluir este apontamento? Esta ação não pode ser desfeita.')) return;
+    e.target.disabled=true;
+    try{
+      await api('/api/admin/apontamento/excluir','POST',{id:id});
+      fechar('mEditAp'); toast('Apontamento excluído','ok'); carregar();
+    }catch(err){ toast(err.message,'err'); }
+    finally{ e.target.disabled=false; }
+  });
+  document.querySelectorAll('.modal-bg').forEach(bg=>bg.addEventListener('click',ev=>{if(ev.target===bg)bg.classList.remove('show');}));
+}
 
 document.querySelectorAll('.chip').forEach(c=>c.addEventListener('click',()=>setPeriodo(c.dataset.p)));
 document.getElementById('de').addEventListener('change', carregar);

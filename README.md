@@ -14,7 +14,9 @@ Solda, Acabamento** — basta cadastrar as máquinas de cada setor.
 
 **Painel do operador** (`/painel`)
 - Grade de máquinas do setor, com status ao vivo (Livre / Produzindo / Pausado).
-- Iniciar → informa OP, operador, código, qtd prevista.
+- Iniciar → **bipe a OP com o leitor de código de barras ou digite**; informa
+  operador, código, qtd prevista. (O leitor envia Enter ao final: se o operador
+  já estiver preenchido, a produção inicia sozinha ao bipar.)
 - Cronômetro por máquina que corre em tempo real.
 - **Pausar / Retomar** com motivo (café, almoço, manutenção…). O tempo pausado
   é **descontado** do tempo produtivo.
@@ -31,12 +33,16 @@ Solda, Acabamento** — basta cadastrar as máquinas de cada setor.
   meta, disponibilidade, desempenho, qualidade e OEE).
 - Filtros por período (hoje, ontem, 7/30 dias, mês) e por setor.
 
-**Administração**
+**Administração** (edita e ajusta tudo)
 - `/admin/maquinas` — cadastro de máquinas (nome, código, setor, ativa, ordem
   e **meta de peças/hora** — a capacidade nominal usada no Desempenho do OEE).
-- `/admin/usuarios` — usuários com acessos (Operador / Gerencial / Admin).
+- `/admin/usuarios` — usuários e acessos: **Operador** (aponta), **Gerencial**
+  (vê dashboard e OEE) e **Administração** (configura tudo). É aqui que você
+  define quem enxerga o OEE e o painel gerencial.
 - `/admin/config` — setores, setor em foco, motivos de pausa, **meta de
-  peças/hora padrão** (fallback), **meta de OEE (%)** e botão de reset.
+  peças/hora padrão**, **meta de OEE (%)** e reset.
+- No dashboard, o admin pode **editar ou excluir** cada apontamento (corrigir
+  OP, quantidade, refugo etc.). Toda alteração fica registrada em auditoria.
 
 ---
 

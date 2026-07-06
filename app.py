@@ -567,7 +567,9 @@ def painel():
 @app.route('/gerencia')
 @perfil_obrigatorio('gerencia', 'admin')
 def dashboard():
-    return render_template('dashboard.html', config_setores=get_setores())
+    acessos = session.get('perfis') or [session.get('perfil')]
+    return render_template('dashboard.html', config_setores=get_setores(),
+                           eh_admin=('admin' in acessos))
 
 
 @app.route('/admin/maquinas')
@@ -1240,6 +1242,81 @@ def download_apontamentos():
         nome = f'apontamentos_{setor}_{di.isoformat()}_a_{df.isoformat()}.xlsx'
         return send_file(bio, as_attachment=True, download_name=nome,
                          mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    finally:
+        db.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API — Admin: editar / excluir apontamentos (com auditoria)
+# ─────────────────────────────────────────────────────────────────────────────
+_CAMPOS_EDITAVEIS = ['op', 'codigo', 'descricao', 'operador_nome', 'operador_matricula',
+                     'quantidade_prevista', 'quantidade_produzida', 'refugo',
+                     'meta_pph', 'observacao']
+
+
+def _snapshot(ap):
+    return {c: getattr(ap, c) for c in _CAMPOS_EDITAVEIS}
+
+
+@app.route('/api/admin/apontamento/salvar', methods=['POST'])
+@perfil_obrigatorio('admin')
+def api_apontamento_salvar():
+    d = request.get_json(force=True, silent=True) or {}
+    aid = _int(d.get('id'), 0)
+    if not aid:
+        return jsonify({'ok': False, 'erro': 'Apontamento inválido.'}), 400
+    db = Session()
+    try:
+        ap = db.query(Apontamento).filter_by(id=aid).first()
+        if not ap:
+            return jsonify({'ok': False, 'erro': 'Apontamento não encontrado.'}), 404
+        antes = _snapshot(ap)
+        # Texto
+        for campo in ['op', 'codigo', 'descricao', 'operador_nome', 'operador_matricula', 'observacao']:
+            if campo in d:
+                setattr(ap, campo, (d.get(campo) or '').strip())
+        # Números
+        if 'quantidade_prevista' in d:
+            ap.quantidade_prevista = max(0, _int(d.get('quantidade_prevista'), 0))
+        if 'quantidade_produzida' in d:
+            ap.quantidade_produzida = max(0, _int(d.get('quantidade_produzida'), 0))
+        if 'refugo' in d:
+            ap.refugo = max(0, _int(d.get('refugo'), 0))
+        if 'meta_pph' in d:
+            ap.meta_pph = max(0.0, _float(d.get('meta_pph'), 0))
+        db.add(ApontamentoLog(
+            apontamento_id=ap.id, quando=datetime.utcnow(),
+            usuario=session.get('nome') or session.get('usuario') or '',
+            acao='editar',
+            antes_json=json.dumps(antes, ensure_ascii=False, default=str),
+            depois_json=json.dumps(_snapshot(ap), ensure_ascii=False, default=str)))
+        db.commit()
+        return jsonify({'ok': True, 'apontamento': ap.to_dict(meta_padrao=get_meta_pph_padrao())})
+    finally:
+        db.close()
+
+
+@app.route('/api/admin/apontamento/excluir', methods=['POST'])
+@perfil_obrigatorio('admin')
+def api_apontamento_excluir():
+    d = request.get_json(force=True, silent=True) or {}
+    aid = _int(d.get('id'), 0)
+    if not aid:
+        return jsonify({'ok': False, 'erro': 'Apontamento inválido.'}), 400
+    db = Session()
+    try:
+        ap = db.query(Apontamento).filter_by(id=aid).first()
+        if not ap:
+            return jsonify({'ok': False, 'erro': 'Apontamento não encontrado.'}), 404
+        db.add(ApontamentoLog(
+            apontamento_id=ap.id, quando=datetime.utcnow(),
+            usuario=session.get('nome') or session.get('usuario') or '',
+            acao='excluir',
+            antes_json=json.dumps(_snapshot(ap), ensure_ascii=False, default=str),
+            depois_json=''))
+        db.delete(ap)
+        db.commit()
+        return jsonify({'ok': True})
     finally:
         db.close()
 

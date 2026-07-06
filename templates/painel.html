@@ -26,8 +26,11 @@
       </div>
       <div class="form-row">
         <div class="field field-full">
-          <label class="label">OP — Ordem de produção *</label>
-          <input class="input" id="iniOp" inputmode="numeric" placeholder="Ex.: 100234567" autocomplete="off">
+          <label class="label">OP — Ordem de produção * <span class="hint">bipe o código de barras ou digite</span></label>
+          <div class="scan-field">
+            <i class="bi bi-upc-scan"></i>
+            <input class="input" id="iniOp" placeholder="Bipe ou digite a OP…" autocomplete="off" autocapitalize="characters">
+          </div>
         </div>
         <div class="field">
           <label class="label">Operador *</label>
@@ -239,7 +242,7 @@ function abrirMaq(id){
     document.getElementById('iniDesc').value='';
     document.getElementById('btnIniciar').dataset.maq=id;
     abrir('mIniciar');
-    setTimeout(()=>document.getElementById('iniOp').focus(),150);
+    setTimeout(()=>{const c=document.getElementById('iniOp');c.focus();c.select();},150);
   }else{
     abrirRun(m);
   }
@@ -276,6 +279,18 @@ function abrirRun(m){
   abrir('mRun');
   tick();
 }
+
+// Bipar OP: leitores de código de barras enviam Enter ao final da leitura.
+// Enter na OP → se o operador já está preenchido, inicia direto; senão foca o operador.
+document.getElementById('iniOp').addEventListener('keydown', (ev)=>{
+  if(ev.key!=='Enter') return;
+  ev.preventDefault();
+  const op = ev.target.value.trim();
+  if(!op) return;
+  const oper = document.getElementById('iniOperador').value.trim();
+  if(oper){ document.getElementById('btnIniciar').click(); }
+  else { document.getElementById('iniOperador').focus(); }
+});
 
 document.getElementById('btnIniciar').addEventListener('click', async (e)=>{
   const id = +e.target.dataset.maq;
