@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+{% block title %}Entrar — Produtividade Dobra{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="login-logo"><img src="{{ url_for('static', filename='logo_decio.png') }}" alt="Décio"></div>
+    <h1 class="login-title">Controle de Produtividade</h1>
+    <p class="login-sub">Dobra · tempo de produção</p>
+
+    {% if erro %}<div class="alert alert-err"><i class="bi bi-exclamation-triangle-fill"></i>{{ erro }}</div>{% endif %}
+
+    <form method="POST" action="{{ url_for('login') }}">
+      <div class="field">
+        <label class="label">Usuário</label>
+        <input type="text" name="usuario" class="input" placeholder="Seu login" required autofocus
+               autocapitalize="none" autocomplete="username">
+      </div>
+      <div class="field">
+        <label class="label">Senha</label>
+        <input type="password" name="senha" class="input" placeholder="Sua senha" required autocomplete="current-password">
+      </div>
+      <button type="submit" class="btn btn-primary btn-block btn-lg"><i class="bi bi-box-arrow-in-right"></i>Entrar</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

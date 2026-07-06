@@ -1,0 +1,174 @@
+{% extends 'base.html' %}
+{% block title %}Usuários{% endblock %}
+{% block content %}
+<div class="section-head">
+  <div>
+    <div class="section-title"><i class="bi bi-people-fill"></i>Usuários</div>
+    <div class="section-sub">Crie operadores, gerência e administradores</div>
+  </div>
+  <button class="btn btn-primary" onclick="novoUsuario()"><i class="bi bi-person-plus-fill"></i>Novo usuário</button>
+</div>
+
+<div class="toolbar">
+  <input class="input" id="busca" placeholder="Buscar por nome ou login…" oninput="render()">
+</div>
+
+<div class="tabela-wrap">
+  <table class="tbl">
+    <thead><tr><th>Nome</th><th>Login</th><th>Matrícula</th><th>Acessos</th><th>Status</th><th class="right">Ações</th></tr></thead>
+    <tbody id="corpo"></tbody>
+  </table>
+</div>
+
+<!-- Modal -->
+<div class="modal-bg" id="mUser">
+  <div class="modal">
+    <div class="modal-head">
+      <h3><i class="bi bi-person-fill"></i><span id="tituloUser">Novo usuário</span></h3>
+      <button class="modal-x" onclick="fechar('mUser')"><i class="bi bi-x"></i></button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="uId">
+      <div class="form-row">
+        <div class="field">
+          <label class="label">Nome *</label>
+          <input class="input" id="uNome" placeholder="Nome completo">
+        </div>
+        <div class="field">
+          <label class="label">Matrícula</label>
+          <input class="input" id="uMatricula" placeholder="Opcional">
+        </div>
+        <div class="field">
+          <label class="label">Login *</label>
+          <input class="input" id="uLogin" placeholder="ex.: joao.silva" autocapitalize="none">
+        </div>
+        <div class="field">
+          <label class="label">Senha <span id="senhaHint" class="muted"></span></label>
+          <input class="input" id="uSenha" type="text" placeholder="Definir senha" autocomplete="new-password">
+        </div>
+        <div class="field field-full">
+          <label class="label">Acessos *</label>
+          <div class="checks">
+            <label class="check" data-p="operador"><input type="checkbox" value="operador"><i></i>Operador</label>
+            <label class="check" data-p="gerencia"><input type="checkbox" value="gerencia"><i></i>Gerencial</label>
+            <label class="check" data-p="admin"><input type="checkbox" value="admin"><i></i>Administração</label>
+          </div>
+          <p class="hint">Operador aponta produção · Gerencial vê dashboard · Admin configura tudo.</p>
+        </div>
+        <div class="field field-full">
+          <div class="pill-toggle" onclick="toggleAtivo()">
+            <span class="switch on" id="uAtivo"></span><span id="uAtivoTxt">Usuário ativo</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="fechar('mUser')">Cancelar</button>
+      <button class="btn btn-primary" id="btnSalvar"><i class="bi bi-check-lg"></i>Salvar</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let USERS = {{ usuarios | tojson }};
+const EU = '{{ session.get("usuario") }}';
+const LABEL = {operador:'Operador', gerencia:'Gerencial', admin:'Admin'};
+const TAGCLS = {operador:'tag-green', gerencia:'tag-amber', admin:'tag-blue'};
+
+function abrir(id){document.getElementById(id).classList.add('show');}
+function fechar(id){document.getElementById(id).classList.remove('show');}
+
+function render(){
+  const q=(document.getElementById('busca').value||'').toLowerCase();
+  const rows=USERS.filter(u=>!q || u.nome.toLowerCase().includes(q) || u.login.toLowerCase().includes(q));
+  const corpo=document.getElementById('corpo');
+  if(!rows.length){ corpo.innerHTML='<tr><td colspan="6"><div class="empty"><i class="bi bi-people"></i><p>Nenhum usuário.</p></div></td></tr>'; return; }
+  corpo.innerHTML=rows.map(u=>{
+    const acc=(u.perfis||[]).map(p=>'<span class="tag '+(TAGCLS[p]||'tag-slate')+'">'+(LABEL[p]||p)+'</span>').join(' ');
+    return '<tr><td><b>'+esc(u.nome)+'</b></td><td>'+esc(u.login)+'</td>'
+      +'<td>'+(u.matricula?esc(u.matricula):'—')+'</td><td>'+acc+'</td>'
+      +'<td>'+(u.ativo?'<span class="tag tag-green">Ativo</span>':'<span class="tag tag-slate">Inativo</span>')+'</td>'
+      +'<td class="right nowrap"><button class="btn btn-ghost btn-sm" onclick="editar('+u.id+')"><i class="bi bi-pencil"></i></button> '
+      +(u.login==='admin'||u.login===EU?'' :'<button class="btn btn-ghost btn-sm" onclick="excluir('+u.id+',\''+esc(u.nome).replace(/\'/g,"")+'\')"><i class="bi bi-trash"></i></button>')
+      +'</td></tr>';
+  }).join('');
+}
+
+document.querySelectorAll('.check input').forEach(cb=>{
+  cb.addEventListener('change',()=>cb.closest('.check').classList.toggle('on', cb.checked));
+});
+function setAcessos(lista){
+  document.querySelectorAll('.check input').forEach(cb=>{
+    cb.checked = lista.includes(cb.value);
+    cb.closest('.check').classList.toggle('on', cb.checked);
+  });
+}
+function getAcessos(){ return [...document.querySelectorAll('.check input:checked')].map(c=>c.value); }
+function toggleAtivo(){
+  const sw=document.getElementById('uAtivo'); sw.classList.toggle('on');
+  document.getElementById('uAtivoTxt').textContent = sw.classList.contains('on')?'Usuário ativo':'Usuário inativo';
+}
+
+function novoUsuario(){
+  document.getElementById('tituloUser').textContent='Novo usuário';
+  document.getElementById('uId').value='';
+  ['uNome','uMatricula','uLogin','uSenha'].forEach(i=>document.getElementById(i).value='');
+  document.getElementById('uLogin').disabled=false;
+  document.getElementById('senhaHint').textContent='(obrigatória)';
+  setAcessos(['operador']);
+  const sw=document.getElementById('uAtivo'); sw.classList.add('on'); document.getElementById('uAtivoTxt').textContent='Usuário ativo';
+  abrir('mUser'); setTimeout(()=>document.getElementById('uNome').focus(),150);
+}
+function editar(id){
+  const u=USERS.find(x=>x.id===id); if(!u) return;
+  document.getElementById('tituloUser').textContent='Editar usuário';
+  document.getElementById('uId').value=u.id;
+  document.getElementById('uNome').value=u.nome;
+  document.getElementById('uMatricula').value=u.matricula||'';
+  document.getElementById('uLogin').value=u.login;
+  document.getElementById('uLogin').disabled=(u.login==='admin');
+  document.getElementById('uSenha').value='';
+  document.getElementById('senhaHint').textContent='(deixe em branco para manter)';
+  setAcessos(u.perfis||[]);
+  const sw=document.getElementById('uAtivo'); sw.classList.toggle('on', !!u.ativo);
+  document.getElementById('uAtivoTxt').textContent = u.ativo?'Usuário ativo':'Usuário inativo';
+  abrir('mUser');
+}
+
+document.getElementById('btnSalvar').addEventListener('click', async(e)=>{
+  const nome=document.getElementById('uNome').value.trim();
+  const login=document.getElementById('uLogin').value.trim();
+  const acessos=getAcessos();
+  if(!nome||!login){ toast('Nome e login são obrigatórios','err'); return; }
+  if(!acessos.length){ toast('Selecione ao menos um acesso','err'); return; }
+  e.target.disabled=true;
+  try{
+    const j=await api('/api/admin/usuario/salvar','POST',{
+      id:document.getElementById('uId').value||0,
+      nome:nome, login:login,
+      matricula:document.getElementById('uMatricula').value.trim(),
+      senha:document.getElementById('uSenha').value,
+      perfis:acessos,
+      ativo:document.getElementById('uAtivo').classList.contains('on'),
+    });
+    const i=USERS.findIndex(x=>x.id===j.usuario.id);
+    if(i>=0) USERS[i]=j.usuario; else USERS.push(j.usuario);
+    USERS.sort((a,b)=>a.nome.localeCompare(b.nome));
+    fechar('mUser'); render(); toast('Usuário salvo','ok');
+  }catch(err){ toast(err.message,'err'); }
+  finally{ e.target.disabled=false; }
+});
+
+async function excluir(id, nome){
+  if(!confirm('Excluir o usuário "'+nome+'"?')) return;
+  try{ await api('/api/admin/usuario/excluir','POST',{id:id});
+    USERS=USERS.filter(x=>x.id!==id); render(); toast('Usuário excluído','ok');
+  }catch(e){ toast(e.message,'err'); }
+}
+
+document.querySelectorAll('.modal-bg').forEach(bg=>bg.addEventListener('click',e=>{if(e.target===bg)bg.classList.remove('show');}));
+render();
+</script>
+{% endblock %}

@@ -1,0 +1,169 @@
+{% extends 'base.html' %}
+{% block title %}Máquinas{% endblock %}
+{% block content %}
+<div class="section-head">
+  <div>
+    <div class="section-title"><i class="bi bi-cpu-fill"></i>Máquinas</div>
+    <div class="section-sub">Cadastre as máquinas de cada setor</div>
+  </div>
+  <button class="btn btn-primary" onclick="novaMaquina()"><i class="bi bi-plus-lg"></i>Nova máquina</button>
+</div>
+
+<div class="toolbar">
+  <input class="input" id="busca" placeholder="Buscar por nome ou código…" oninput="render()">
+  <select class="input" id="fSetor" onchange="render()" style="max-width:200px;">
+    <option value="">Todos os setores</option>
+    {% for s in setores %}<option>{{ s }}</option>{% endfor %}
+  </select>
+</div>
+
+<div class="tabela-wrap">
+  <table class="tbl">
+    <thead><tr><th style="width:60px;">Ordem</th><th>Máquina</th><th>Código</th><th>Setor</th><th class="right">Meta pç/h</th><th>Status</th><th class="right">Ações</th></tr></thead>
+    <tbody id="corpo"></tbody>
+  </table>
+</div>
+
+<!-- Modal -->
+<div class="modal-bg" id="mMaq">
+  <div class="modal">
+    <div class="modal-head">
+      <h3><i class="bi bi-cpu-fill"></i><span id="tituloMaq">Nova máquina</span></h3>
+      <button class="modal-x" onclick="fechar('mMaq')"><i class="bi bi-x"></i></button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="mId">
+      <div class="form-row">
+        <div class="field field-full">
+          <label class="label">Nome da máquina *</label>
+          <input class="input" id="mNome" placeholder="Ex.: Dobradeira 07">
+        </div>
+        <div class="field">
+          <label class="label">Código / etiqueta</label>
+          <input class="input" id="mCodigo" placeholder="Ex.: DOB-07">
+        </div>
+        <div class="field">
+          <label class="label">Ordem na grade</label>
+          <input class="input" id="mOrdem" inputmode="numeric" placeholder="0">
+        </div>
+        <div class="field">
+          <label class="label">Setor</label>
+          <select class="input" id="mSetor">
+            {% for s in setores %}<option>{{ s }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label class="label">Meta de peças/hora <span class="hint">(desempenho p/ OEE)</span></label>
+          <input class="input" id="mMeta" inputmode="decimal" placeholder="Ex.: 60">
+        </div>
+        <div class="field" style="justify-content:flex-end;">
+          <label class="label">Ativa</label>
+          <div class="pill-toggle" onclick="toggle('mAtiva')">
+            <span class="switch on" id="mAtiva"></span><span id="mAtivaTxt">Sim</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="fechar('mMaq')">Cancelar</button>
+      <button class="btn btn-primary" id="btnSalvar"><i class="bi bi-check-lg"></i>Salvar</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let MAQUINAS = {{ maquinas | tojson }};
+
+function toggle(id){
+  const sw=document.getElementById(id);
+  sw.classList.toggle('on');
+  const on=sw.classList.contains('on');
+  if(id==='mAtiva') document.getElementById('mAtivaTxt').textContent = on?'Sim':'Não';
+}
+
+function render(){
+  const q=(document.getElementById('busca').value||'').toLowerCase();
+  const fs=document.getElementById('fSetor').value;
+  const rows = MAQUINAS.filter(m=>
+    (!fs || m.setor===fs) &&
+    (!q || m.nome.toLowerCase().includes(q) || (m.codigo||'').toLowerCase().includes(q)));
+  const corpo=document.getElementById('corpo');
+  if(!rows.length){ corpo.innerHTML='<tr><td colspan="7"><div class="empty"><i class="bi bi-cpu"></i><p>Nenhuma máquina.</p></div></td></tr>'; return; }
+  corpo.innerHTML = rows.map(m=>
+    '<tr><td class="td-num">'+(m.ordem||0)+'</td>'
+    +'<td><b>'+esc(m.nome)+'</b></td>'
+    +'<td>'+(m.codigo?'<span class="tag tag-slate">'+esc(m.codigo)+'</span>':'—')+'</td>'
+    +'<td><span class="tag tag-blue">'+esc(m.setor)+'</span></td>'
+    +'<td class="right">'+(m.meta_pph?('<b>'+m.meta_pph+'</b> <span class="muted">pç/h</span>'):'<span class="muted">—</span>')+'</td>'
+    +'<td>'+(m.ativa?'<span class="tag tag-green">Ativa</span>':'<span class="tag tag-slate">Inativa</span>')+'</td>'
+    +'<td class="right nowrap">'
+    +'<button class="btn btn-ghost btn-sm" onclick=\'editar('+m.id+')\'><i class="bi bi-pencil"></i></button> '
+    +'<button class="btn btn-ghost btn-sm" onclick="excluir('+m.id+',\''+esc(m.nome).replace(/\'/g,"")+'\')"><i class="bi bi-trash"></i></button>'
+    +'</td></tr>').join('');
+}
+
+function novaMaquina(){
+  document.getElementById('tituloMaq').textContent='Nova máquina';
+  document.getElementById('mId').value='';
+  document.getElementById('mNome').value='';
+  document.getElementById('mCodigo').value='';
+  document.getElementById('mOrdem').value=(MAQUINAS.length+1);
+  document.getElementById('mMeta').value='';
+  document.getElementById('mSetor').value='{{ setor_ativo }}';
+  const sw=document.getElementById('mAtiva'); sw.classList.add('on'); document.getElementById('mAtivaTxt').textContent='Sim';
+  abrir('mMaq');
+  setTimeout(()=>document.getElementById('mNome').focus(),150);
+}
+function editar(id){
+  const m=MAQUINAS.find(x=>x.id===id); if(!m) return;
+  document.getElementById('tituloMaq').textContent='Editar máquina';
+  document.getElementById('mId').value=m.id;
+  document.getElementById('mNome').value=m.nome;
+  document.getElementById('mCodigo').value=m.codigo||'';
+  document.getElementById('mOrdem').value=m.ordem||0;
+  document.getElementById('mMeta').value=m.meta_pph||'';
+  document.getElementById('mSetor').value=m.setor;
+  const sw=document.getElementById('mAtiva');
+  sw.classList.toggle('on', !!m.ativa); document.getElementById('mAtivaTxt').textContent=m.ativa?'Sim':'Não';
+  abrir('mMaq');
+}
+function abrir(id){document.getElementById(id).classList.add('show');}
+function fechar(id){document.getElementById(id).classList.remove('show');}
+
+document.getElementById('btnSalvar').addEventListener('click', async(e)=>{
+  const nome=document.getElementById('mNome').value.trim();
+  if(!nome){ toast('Informe o nome','err'); return; }
+  e.target.disabled=true;
+  try{
+    const j=await api('/api/admin/maquina/salvar','POST',{
+      id:document.getElementById('mId').value||0,
+      nome:nome,
+      codigo:document.getElementById('mCodigo').value.trim(),
+      ordem:document.getElementById('mOrdem').value.trim()||0,
+      setor:document.getElementById('mSetor').value,
+      meta_pph:document.getElementById('mMeta').value.trim()||0,
+      ativa:document.getElementById('mAtiva').classList.contains('on'),
+    });
+    const i=MAQUINAS.findIndex(x=>x.id===j.maquina.id);
+    if(i>=0) MAQUINAS[i]=j.maquina; else MAQUINAS.push(j.maquina);
+    MAQUINAS.sort((a,b)=> (a.setor||'').localeCompare(b.setor||'') || (a.ordem||0)-(b.ordem||0));
+    fechar('mMaq'); render(); toast('Máquina salva','ok');
+  }catch(err){ toast(err.message,'err'); }
+  finally{ e.target.disabled=false; }
+});
+
+async function excluir(id, nome){
+  if(!confirm('Excluir a máquina "'+nome+'"?')) return;
+  try{
+    await api('/api/admin/maquina/excluir','POST',{id:id});
+    MAQUINAS = MAQUINAS.filter(x=>x.id!==id);
+    render(); toast('Máquina excluída','ok');
+  }catch(e){ toast(e.message,'err'); }
+}
+
+document.querySelectorAll('.modal-bg').forEach(bg=>bg.addEventListener('click',e=>{if(e.target===bg)bg.classList.remove('show');}));
+render();
+</script>
+{% endblock %}

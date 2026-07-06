@@ -1,0 +1,263 @@
+{% extends 'base.html' %}
+{% block title %}Painel Gerencial{% endblock %}
+{% block page_class %}page-wide{% endblock %}
+{% block content %}
+<div class="section-head">
+  <div>
+    <div class="section-title"><i class="bi bi-bar-chart-line-fill"></i>Painel Gerencial</div>
+    <div class="section-sub">Indicadores de produtividade — setor <b id="setorNome">Dobra</b></div>
+  </div>
+  <div class="flex">
+    <button class="btn btn-ghost btn-sm" id="btnAtualizar"><i class="bi bi-arrow-clockwise"></i>Atualizar</button>
+    <a class="btn btn-primary btn-sm" id="btnExcel"><i class="bi bi-file-earmark-excel-fill"></i>Excel</a>
+  </div>
+</div>
+
+<div class="filtros">
+  <div class="filtro-item">
+    <label class="label">De</label>
+    <input type="date" class="input" id="de">
+  </div>
+  <div class="filtro-item">
+    <label class="label">Até</label>
+    <input type="date" class="input" id="ate">
+  </div>
+  <div class="filtro-item">
+    <label class="label">Setor</label>
+    <select class="input" id="setor"></select>
+  </div>
+  <div class="filtro-item grow">
+    <label class="label">Períodos rápidos</label>
+    <div class="chips-rapidos">
+      <button class="chip" data-p="hoje">Hoje</button>
+      <button class="chip" data-p="ontem">Ontem</button>
+      <button class="chip" data-p="7">7 dias</button>
+      <button class="chip" data-p="30">30 dias</button>
+      <button class="chip" data-p="mes">Este mês</button>
+    </div>
+  </div>
+</div>
+
+<div id="conteudo">
+  <div class="center-load"><span class="spin"></span></div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let charts = {};
+function destruirCharts(){ Object.values(charts).forEach(c=>{try{c.destroy();}catch(e){}}); charts={}; }
+
+function isoLocal(d){ return d.toISOString().slice(0,10); }
+function setPeriodo(p){
+  const hoje = new Date();
+  let de = new Date(hoje), ate = new Date(hoje);
+  if(p==='ontem'){ de.setDate(de.getDate()-1); ate.setDate(ate.getDate()-1); }
+  else if(p==='7'){ de.setDate(de.getDate()-6); }
+  else if(p==='30'){ de.setDate(de.getDate()-29); }
+  else if(p==='mes'){ de = new Date(hoje.getFullYear(), hoje.getMonth(), 1); }
+  document.getElementById('de').value = isoLocal(de);
+  document.getElementById('ate').value = isoLocal(ate);
+  document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('ativo', c.dataset.p===p));
+  carregar();
+}
+
+function fmt(n){ return (n==null?0:n).toLocaleString('pt-BR'); }
+
+async function carregar(){
+  const de=document.getElementById('de').value, ate=document.getElementById('ate').value;
+  const setor=document.getElementById('setor').value;
+  const q=`?de=${de}&ate=${ate}&setor=${encodeURIComponent(setor)}`;
+  document.getElementById('btnExcel').href = '/api/download/apontamentos'+q;
+  const box=document.getElementById('conteudo');
+  try{
+    const j = await api('/api/dashboard/dados'+q);
+    document.getElementById('setorNome').textContent = j.setor;
+    render(j);
+  }catch(e){
+    box.innerHTML = '<div class="empty"><i class="bi bi-exclamation-circle"></i><p>'+esc(e.message)+'</p></div>';
+  }
+}
+
+function render(j){
+  const k=j.kpis;
+  const kpis = [
+    {l:'OPs finalizadas', v:fmt(k.ops), ic:'bi-flag-fill', cls:''},
+    {l:'Peças produzidas', v:fmt(k.pecas), ic:'bi-box-seam-fill', cls:'accent-green'},
+    {l:'Horas produtivas', v:k.prod_h, u:'h', ic:'bi-stopwatch-fill', cls:'accent-blue'},
+    {l:'Horas em pausa', v:k.pausa_h, u:'h', ic:'bi-pause-circle-fill', cls:'accent-amber'},
+    {l:'Eficiência', v:k.eficiencia, u:'%', ic:'bi-speedometer2', cls:'accent-green'},
+    {l:'Peças/hora', v:k.pph, ic:'bi-lightning-charge-fill', cls:'accent-blue'},
+    {l:'Refugo', v:fmt(k.refugo), ic:'bi-x-octagon-fill', cls:'accent-red'},
+    {l:'Em andamento', v:fmt(k.em_andamento), ic:'bi-activity', cls:''},
+  ];
+  let html = '<div class="kpi-grid">' + kpis.map(x=>
+    '<div class="kpi '+x.cls+'"><div class="kpi-lab"><i class="bi '+x.ic+'"></i>'+x.l+'</div>'
+    +'<div class="kpi-val">'+x.v+(x.u?'<span class="kpi-unit">'+x.u+'</span>':'')+'</div></div>').join('') + '</div>';
+
+  html += blocoOee(k);
+
+  html += '<div class="grid-2">'
+    + '<div class="card card-pad"><div class="card-title"><i class="bi bi-graph-up"></i>Produção por dia</div><div class="chart-box"><canvas id="chDia"></canvas></div></div>'
+    + '<div class="card card-pad"><div class="card-title"><i class="bi bi-pie-chart-fill"></i>Motivos de pausa</div><div class="chart-box"><canvas id="chPausa"></canvas></div></div>'
+    + '</div>';
+
+  html += '<div class="grid-2 mt">'
+    + '<div class="card card-pad"><div class="card-title"><i class="bi bi-person-badge-fill"></i>Por operador</div>'+tabelaRank(j.por_operador)+'</div>'
+    + '<div class="card card-pad"><div class="card-title"><i class="bi bi-cpu-fill"></i>Por máquina</div>'+tabelaRank(j.por_maquina)+'</div>'
+    + '</div>';
+
+  if(j.em_andamento && j.em_andamento.length){
+    html += '<div class="mt"><div class="card-title"><i class="bi bi-activity"></i>Em andamento agora</div>'+tabelaAtivos(j.em_andamento)+'</div>';
+  }
+
+  html += '<div class="mt"><div class="card-title"><i class="bi bi-clock-history"></i>Últimos apontamentos finalizados</div>'+tabelaUltimos(j.ultimos)+'</div>';
+
+  document.getElementById('conteudo').innerHTML = html;
+  destruirCharts();
+  desenharCharts(j);
+}
+
+function pctTxt(v){ return (v==null) ? '—' : (String(v).replace('.',',')+'%'); }
+function barPct(v){ return (v==null) ? 0 : Math.max(0, Math.min(100, v)); }
+function corPilar(v){
+  if(v==null) return '#94a3b8';
+  if(v>=85) return '#2BA45C';
+  if(v>=60) return '#F59E0B';
+  return '#D6473F';
+}
+
+function blocoOee(k){
+  const meta = k.meta_oee || 0;
+  const semMeta = (k.desempenho == null);
+  const pilar = (nome, sub, val, ic)=>{
+    const c = corPilar(val);
+    return '<div class="oee-pillar-item">'
+      +'<div class="oee-pillar-top"><span class="oee-pillar-name"><i class="bi '+ic+'"></i>'+nome+' <small>'+sub+'</small></span>'
+      +'<span class="oee-pillar-val">'+pctTxt(val)+'</span></div>'
+      +'<div class="oee-bar"><span style="width:'+barPct(val)+'%;background:'+c+';"></span></div></div>';
+  };
+  let pillars = pilar('Disponibilidade','tempo produtivo ÷ total', k.disponibilidade, 'bi-hourglass-split')
+    + pilar('Desempenho','produção ÷ meta pç/h', k.desempenho, 'bi-lightning-charge-fill')
+    + pilar('Qualidade','peças boas ÷ produzidas', k.qualidade, 'bi-patch-check-fill');
+  if(semMeta){
+    pillars += '<div class="oee-hint"><i class="bi bi-info-circle-fill"></i>Cadastre a <b>&nbsp;meta de peças/hora&nbsp;</b> nas máquinas (ou um padrão em Configurações) para calcular Desempenho e OEE.</div>';
+  }
+  return '<div class="card card-pad oee-card"><div class="card-title"><i class="bi bi-speedometer2"></i>OEE — Eficiência Global do Equipamento</div>'
+    +'<div class="oee-wrap">'
+    +'<div><div class="oee-gauge"><canvas id="chOee" width="200" height="200"></canvas>'
+    +'<div class="oee-center"><span class="oee-num">'+pctTxt(k.oee)+'</span><span class="oee-lab">OEE</span>'
+    + (meta?'<span class="oee-meta">meta '+pctTxt(meta)+'</span>':'')+'</div></div></div>'
+    +'<div class="oee-pillars">'+pillars+'</div>'
+    +'</div></div>';
+}
+
+function tabelaRank(rows){
+  if(!rows || !rows.length) return '<div class="empty" style="padding:26px;"><p>Sem dados no período.</p></div>';
+  return '<div class="tabela-wrap"><table class="tbl"><thead><tr>'
+    +'<th>Nome</th><th class="td-num">OPs</th><th class="td-num">Peças</th><th class="td-num">Horas prod.</th><th class="td-num">Pçs/h</th><th class="td-num">OEE</th></tr></thead><tbody>'
+    + rows.map(r=>'<tr><td><b>'+esc(r.nome)+'</b></td><td class="td-num">'+r.ops+'</td>'
+      +'<td class="td-num">'+fmt(r.pecas)+'</td><td class="td-num">'+r.prod_h+'</td>'
+      +'<td class="td-num">'+r.pph+'</td><td class="td-num">'+tagOee(r.oee)+'</td></tr>').join('')
+    + '</tbody></table></div>';
+}
+function tagOee(v){
+  if(v==null) return '<span class="muted">—</span>';
+  const c = v>=75?'tag-green':(v>=50?'tag-amber':'tag-red');
+  return '<span class="tag '+c+'">'+String(v).replace('.',',')+'%</span>';
+}
+function tabelaAtivos(rows){
+  return '<div class="tabela-wrap"><table class="tbl"><thead><tr>'
+    +'<th>Máquina</th><th>OP</th><th>Operador</th><th>Estado</th><th class="td-num">Tempo prod.</th><th class="td-num">Pausa</th></tr></thead><tbody>'
+    + rows.map(r=>{
+      const tag = r.pausado ? '<span class="tag tag-amber">Pausado</span>' : '<span class="tag tag-green">Produzindo</span>';
+      return '<tr><td><b>'+esc(r.maquina_nome)+'</b></td><td>'+esc(r.op)+'</td><td>'+esc(r.operador_nome)+'</td>'
+        +'<td>'+tag+'</td><td class="td-num mono">'+hms(r.producao_seg)+'</td><td class="td-num mono">'+hms(r.pausa_seg)+'</td></tr>';
+    }).join('') + '</tbody></table></div>';
+}
+function tabelaUltimos(rows){
+  if(!rows || !rows.length) return '<div class="empty"><i class="bi bi-inbox"></i><p>Nenhum apontamento finalizado no período.</p></div>';
+  return '<div class="tabela-wrap"><table class="tbl"><thead><tr>'
+    +'<th>Início</th><th>Máquina</th><th>OP</th><th>Operador</th><th class="td-num">Prod.</th><th class="td-num">Refugo</th>'
+    +'<th class="td-num">T. produtivo</th><th class="td-num">Pausa</th><th class="td-num">Pçs/h</th><th class="td-num">OEE</th></tr></thead><tbody>'
+    + rows.map(r=>'<tr><td class="nowrap">'+esc(r.inicio)+'</td><td>'+esc(r.maquina_nome)+'</td>'
+      +'<td><b>'+esc(r.op)+'</b></td><td>'+esc(r.operador_nome)+'</td>'
+      +'<td class="td-num">'+fmt(r.quantidade_produzida)+'</td><td class="td-num">'+fmt(r.refugo)+'</td>'
+      +'<td class="td-num mono">'+hms(r.producao_seg)+'</td><td class="td-num mono">'+hms(r.pausa_seg)+'</td>'
+      +'<td class="td-num">'+r.pph+'</td><td class="td-num">'+tagOee(r.oee)+'</td></tr>').join('')
+    + '</tbody></table></div>';
+}
+
+function desenharCharts(j){
+  const cor = getComputedStyle(document.documentElement);
+  const azul='#1668C0', verde='#2BA45C', amber='#F59E0B', violet='#7C5CFC', red='#D6473F', sky='#2E7DA6';
+  // Medidor de OEE
+  const oeeCtx = document.getElementById('chOee');
+  if(oeeCtx){
+    const v = j.kpis.oee;
+    const val = (v==null) ? 0 : Math.max(0, Math.min(100, v));
+    const c = v==null ? '#94a3b8' : (v>=75?'#3ddc84':(v>=50?'#ffc24b':'#ff7a70'));
+    charts.oee = new Chart(oeeCtx, {
+      type:'doughnut',
+      data:{ datasets:[{ data:[val, 100-val],
+        backgroundColor:[c, 'rgba(255,255,255,.16)'], borderWidth:0 }]},
+      options:{responsive:false, maintainAspectRatio:false, cutout:'76%',
+        rotation:-90, circumference:360,
+        plugins:{legend:{display:false}, tooltip:{enabled:false}}}
+    });
+  }
+  // Produção por dia
+  const dia = j.por_dia || [];
+  const ctx1 = document.getElementById('chDia');
+  if(ctx1){
+    charts.dia = new Chart(ctx1, {
+      type:'bar',
+      data:{ labels: dia.map(d=>d.dia.split('-').reverse().slice(0,2).join('/')),
+        datasets:[
+          {label:'Peças', data:dia.map(d=>d.pecas), backgroundColor:azul, borderRadius:6, yAxisID:'y'},
+          {label:'Horas produtivas', data:dia.map(d=>d.prod_h), type:'line', borderColor:verde,
+           backgroundColor:verde, tension:.3, yAxisID:'y1', pointRadius:3}
+        ]},
+      options:{responsive:true, maintainAspectRatio:false,
+        plugins:{legend:{position:'bottom'}},
+        scales:{ y:{beginAtZero:true, position:'left', title:{display:true,text:'Peças'}},
+          y1:{beginAtZero:true, position:'right', grid:{drawOnChartArea:false}, title:{display:true,text:'Horas'}} }}
+    });
+  }
+  // Motivos de pausa
+  const mp = j.motivos_pausa || [];
+  const ctx2 = document.getElementById('chPausa');
+  if(ctx2){
+    if(!mp.length){
+      ctx2.parentElement.innerHTML='<div class="empty" style="padding:50px;"><i class="bi bi-emoji-smile"></i><p>Nenhuma pausa registrada.</p></div>';
+    }else{
+      const paleta=[amber,violet,sky,red,verde,azul,'#e58a00','#9b7bff','#48b06e'];
+      charts.pausa = new Chart(ctx2, {
+        type:'doughnut',
+        data:{ labels: mp.map(m=>m.motivo),
+          datasets:[{ data: mp.map(m=>m.min), backgroundColor: mp.map((_,i)=>paleta[i%paleta.length]) }]},
+        options:{responsive:true, maintainAspectRatio:false, cutout:'60%',
+          plugins:{legend:{position:'right'},
+            tooltip:{callbacks:{label:c=>c.label+': '+c.raw+' min'}}}}
+      });
+    }
+  }
+}
+
+// setores no filtro
+const SETORES = {{ (config_setores if config_setores is defined else []) | tojson }};
+(function initSetores(){
+  const sel=document.getElementById('setor');
+  const lista = SETORES && SETORES.length ? SETORES : ['{{ setor_ativo }}'];
+  sel.innerHTML = lista.map(s=>'<option '+(s==='{{ setor_ativo }}'?'selected':'')+'>'+esc(s)+'</option>').join('');
+})();
+
+document.querySelectorAll('.chip').forEach(c=>c.addEventListener('click',()=>setPeriodo(c.dataset.p)));
+document.getElementById('de').addEventListener('change', carregar);
+document.getElementById('ate').addEventListener('change', carregar);
+document.getElementById('setor').addEventListener('change', carregar);
+document.getElementById('btnAtualizar').addEventListener('click', carregar);
+
+setPeriodo('hoje');
+</script>
+{% endblock %}

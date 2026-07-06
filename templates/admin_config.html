@@ -1,0 +1,137 @@
+{% extends 'base.html' %}
+{% block title %}Configurações{% endblock %}
+{% block content %}
+<div class="section-head">
+  <div>
+    <div class="section-title"><i class="bi bi-gear-fill"></i>Configurações</div>
+    <div class="section-sub">Setores, motivos de pausa e metas de performance (OEE)</div>
+  </div>
+</div>
+
+<div class="card card-pad" style="margin-bottom:16px;border-color:var(--brand-a);">
+  <div class="card-title"><i class="bi bi-speedometer2"></i>Performance / OEE</div>
+  <p class="hint" style="margin-bottom:12px;">
+    O <b>OEE</b> combina três pilares: <b>Disponibilidade</b> (tempo produtivo ÷ tempo total, descontando pausas),
+    <b>Desempenho</b> (produção real ÷ meta de peças/hora) e <b>Qualidade</b> (peças boas ÷ produzidas).
+    A meta de peças/hora ideal fica em cada máquina; o valor abaixo é usado quando a máquina não tem meta própria.
+  </p>
+  <div class="form-row">
+    <div class="field">
+      <label class="label">Meta de peças/hora padrão <span class="hint">(fallback p/ desempenho)</span></label>
+      <input class="input" id="metaPph" inputmode="decimal" placeholder="0 = sem meta">
+    </div>
+    <div class="field">
+      <label class="label">Meta de OEE (%) <span class="hint">(referência nos indicadores)</span></label>
+      <input class="input" id="metaOee" inputmode="decimal" placeholder="Ex.: 75">
+    </div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="card card-pad">
+    <div class="card-title"><i class="bi bi-diagram-3-fill"></i>Setores</div>
+    <p class="hint" style="margin-bottom:10px;">O sistema serve para Corte, Dobra, Estamparia, Solda, Acabamento… Cadastre aqui e depois crie as máquinas de cada um.</p>
+    <div class="flex">
+      <input class="input" id="novoSetor" placeholder="Adicionar setor…" onkeydown="if(event.key==='Enter')addSetor()">
+      <button class="btn btn-primary" onclick="addSetor()"><i class="bi bi-plus-lg"></i></button>
+    </div>
+    <div class="chips-edit" id="chipsSetores"></div>
+
+    <div class="field mt">
+      <label class="label">Setor em foco (padrão dos painéis)</label>
+      <select class="input" id="setorAtivo"></select>
+    </div>
+  </div>
+
+  <div class="card card-pad">
+    <div class="card-title"><i class="bi bi-pause-circle-fill"></i>Motivos de pausa</div>
+    <p class="hint" style="margin-bottom:10px;">Aparecem para o operador ao pausar (café, almoço, manutenção…).</p>
+    <div class="flex">
+      <input class="input" id="novoMotivo" placeholder="Adicionar motivo…" onkeydown="if(event.key==='Enter')addMotivo()">
+      <button class="btn btn-primary" onclick="addMotivo()"><i class="bi bi-plus-lg"></i></button>
+    </div>
+    <div class="chips-edit" id="chipsMotivos"></div>
+  </div>
+</div>
+
+<div class="flex mt" style="justify-content:flex-end;">
+  <button class="btn btn-primary btn-lg" id="btnSalvar"><i class="bi bi-check-lg"></i>Salvar configurações</button>
+</div>
+
+<div class="card card-pad mt" style="border-color:var(--red-soft);">
+  <div class="card-title" style="color:var(--red);"><i class="bi bi-exclamation-triangle-fill"></i>Zona de perigo</div>
+  <p class="hint" style="margin-bottom:12px;">Apaga TODOS os apontamentos (histórico de produção). Máquinas e usuários permanecem. Não pode ser desfeito.</p>
+  <div class="flex">
+    <input class="input" id="reset" placeholder="Digite APAGAR para confirmar" style="max-width:280px;">
+    <button class="btn btn-red" id="btnReset"><i class="bi bi-trash"></i>Apagar apontamentos</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let SETORES = {{ setores | tojson }};
+let MOTIVOS = {{ motivos | tojson }};
+let SETOR_ATIVO = '{{ setor_ativo }}';
+const META_PPH_PADRAO = {{ meta_pph_padrao | tojson }};
+const META_OEE = {{ meta_oee | tojson }};
+
+function chip(txt, tipo){
+  return '<span class="chip-x">'+esc(txt)+'<button onclick="rem'+tipo+'(\''+esc(txt).replace(/\'/g,"")+'\')"><i class="bi bi-x"></i></button></span>';
+}
+function renderSetores(){
+  document.getElementById('chipsSetores').innerHTML = SETORES.map(s=>chip(s,'Setor')).join('') || '<span class="hint">Nenhum setor.</span>';
+  const sel=document.getElementById('setorAtivo');
+  sel.innerHTML = SETORES.map(s=>'<option '+(s===SETOR_ATIVO?'selected':'')+'>'+esc(s)+'</option>').join('');
+}
+function renderMotivos(){
+  document.getElementById('chipsMotivos').innerHTML = MOTIVOS.map(m=>chip(m,'Motivo')).join('') || '<span class="hint">Nenhum motivo.</span>';
+}
+function addSetor(){
+  const v=document.getElementById('novoSetor').value.trim(); if(!v) return;
+  if(!SETORES.includes(v)) SETORES.push(v);
+  document.getElementById('novoSetor').value=''; renderSetores();
+}
+function remSetor(v){ SETORES=SETORES.filter(s=>s!==v); if(SETOR_ATIVO===v) SETOR_ATIVO=SETORES[0]||''; renderSetores(); }
+function addMotivo(){
+  const v=document.getElementById('novoMotivo').value.trim(); if(!v) return;
+  if(!MOTIVOS.includes(v)) MOTIVOS.push(v);
+  document.getElementById('novoMotivo').value=''; renderMotivos();
+}
+function remMotivo(v){ MOTIVOS=MOTIVOS.filter(m=>m!==v); renderMotivos(); }
+
+document.getElementById('btnSalvar').addEventListener('click', async(e)=>{
+  if(!SETORES.length){ toast('Cadastre ao menos um setor','err'); return; }
+  e.target.disabled=true;
+  try{
+    const j=await api('/api/admin/config/salvar','POST',{
+      setores:SETORES, motivos_pausa:MOTIVOS, setor_ativo:document.getElementById('setorAtivo').value,
+      meta_pph_padrao:document.getElementById('metaPph').value.trim()||0,
+      meta_oee:document.getElementById('metaOee').value.trim()||0,
+    });
+    SETORES=j.setores; MOTIVOS=j.motivos_pausa; SETOR_ATIVO=j.setor_ativo;
+    document.getElementById('metaPph').value = j.meta_pph_padrao||'';
+    document.getElementById('metaOee').value = j.meta_oee||'';
+    renderSetores(); renderMotivos();
+    toast('Configurações salvas','ok');
+  }catch(err){ toast(err.message,'err'); }
+  finally{ e.target.disabled=false; }
+});
+
+document.getElementById('btnReset').addEventListener('click', async(e)=>{
+  const c=document.getElementById('reset').value.trim();
+  if(c!=='APAGAR'){ toast('Digite APAGAR para confirmar','err'); return; }
+  if(!confirm('Tem certeza? Todos os apontamentos serão apagados.')) return;
+  e.target.disabled=true;
+  try{ const j=await api('/api/admin/reset','POST',{confirmar:c});
+    document.getElementById('reset').value='';
+    toast(j.apagados+' apontamentos apagados','ok');
+  }catch(err){ toast(err.message,'err'); }
+  finally{ e.target.disabled=false; }
+});
+
+document.getElementById('metaPph').value = META_PPH_PADRAO || '';
+document.getElementById('metaOee').value = META_OEE || '';
+renderSetores(); renderMotivos();
+</script>
+{% endblock %}

@@ -1,0 +1,29 @@
+{% extends 'base.html' %}
+{% block title %}Escolher painel{% endblock %}
+{% set INFO = {
+  'operador': {'ic':'bi-person-workspace', 'nome':'Operador', 'desc':'Iniciar, pausar e finalizar a produção', 'rota':'painel'},
+  'gerencia': {'ic':'bi-bar-chart-line-fill', 'nome':'Gerencial', 'desc':'Dashboard e indicadores', 'rota':'dashboard'},
+  'admin': {'ic':'bi-sliders', 'nome':'Administração', 'desc':'Máquinas, usuários e configurações', 'rota':'admin_maquinas'}
+} %}
+{% block content %}
+<div class="sel-wrap">
+  <div>
+    <div style="text-align:center;margin-bottom:22px;">
+      <div class="section-title" style="justify-content:center;">Olá, {{ session.get('nome') }} 👋</div>
+      <div class="section-sub">Escolha o painel que deseja acessar</div>
+    </div>
+    <div class="sel-grid">
+      {% for p in acessos %}
+      {% set i = INFO.get(p) %}
+      {% if i %}
+      <a href="{{ url_for(i.rota) }}" class="sel-card">
+        <div class="sel-ic {{ p }}"><i class="bi {{ i.ic }}"></i></div>
+        <div class="sel-nome">{{ i.nome }}</div>
+        <div class="sel-desc">{{ i.desc }}</div>
+      </a>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}
