@@ -20,12 +20,13 @@ por setor — então o mesmo sistema atende toda a fábrica de forma integrada.
 **Painel do operador** (`/painel`)
 - Grade de máquinas do setor, com status ao vivo (Livre / Produzindo / Pausado)
   nas cores da Décio (azul e verde).
-- **Iniciar** → informa só o operador; o cronômetro começa na hora.
+- **Iniciar** → **cadastre a OP** (bipe o código de barras ou digite). A OP é
+  buscada na **lista mestra do SAP** e preenche material, descrição e quantidade
+  automaticamente; informe o operador e inicie. O cronômetro começa na hora.
 - **Pausar / Retomar** com os motivos do Banho (Almoço/Janta, Café, Laboral,
   Outros…) em botões grandes; o tempo pausado é **descontado** do produtivo.
-- **Finalizar** → **bipe a OP** (leitor de código de barras ou digite). A OP é
-  buscada na **lista mestra do SAP** e preenche material, descrição e
-  quantidade automaticamente; depois informe a quantidade produzida e o refugo.
+- **Finalizar** → informa a quantidade produzida e o refugo (a OP e a peça já
+  estão cadastradas do início).
 
 ### Lista mestra do SAP (mesma do Banho)
 Coloque o arquivo **`lista_mestra.xlsx`** (ou `.csv`/`.txt`) na raiz do
@@ -40,6 +41,9 @@ da lista e um botão para recarregar. O arquivo de exemplo já acompanha o proje
 - **Atualiza sozinho a cada 20s** (produção em tempo real, estilo MES).
 - KPIs: OPs, peças, horas produtivas, horas em pausa, eficiência, peças/hora,
   refugo e quantos apontamentos estão em andamento agora.
+- **Produção em tempo real**: cards por setor mostrando, para cada máquina em
+  atividade, a OP, a peça, a quantidade prevista, o operador, o cronômetro ao
+  vivo e o estado (produzindo ou em pausa — Café, Almoço, etc.).
 - **OEE** em destaque (medidor + os 3 pilares: Disponibilidade, Desempenho e
   Qualidade), com a meta de OEE como referência.
 - **Linha do tempo** (estilo Banho): seletor de período em Ano / Mês / Dia —

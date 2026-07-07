@@ -972,10 +972,12 @@ def _float(v, padrao=0.0):
 def api_iniciar():
     d = request.get_json(force=True, silent=True) or {}
     maquina_id = _int(d.get('maquina_id'), 0)
-    op = (d.get('op') or '').strip()          # opcional no início — a OP é bipada no final
+    op = (d.get('op') or '').strip()          # OP cadastrada no início
     operador = (d.get('operador_nome') or session.get('nome') or '').strip()
     if not maquina_id:
         return jsonify({'ok': False, 'erro': 'Máquina inválida.'}), 400
+    if not op:
+        return jsonify({'ok': False, 'erro': 'Cadastre a OP (bipe ou digite) antes de iniciar.'}), 400
     if not operador:
         return jsonify({'ok': False, 'erro': 'Informe o operador.'}), 400
 
@@ -1100,11 +1102,9 @@ def api_finalizar():
             ap.pausa_motivo = ''
         ap.fim = agora
         ap.producao_seg = round(ap.produtivo_seg(agora), 1)
-        # OP bipada no final: puxa OP e dados da lista mestra do SAP.
-        op = (d.get('op') or '').strip()
-        if not op:
-            return jsonify({'ok': False, 'erro': 'Bipe ou informe a OP para finalizar.'}), 400
-        ap.op = op
+        # OP já foi cadastrada no início; aqui só permite ajuste opcional.
+        if d.get('op'):
+            ap.op = (d.get('op') or '').strip()
         if d.get('codigo') is not None:
             ap.codigo = (d.get('codigo') or '').strip()
         if d.get('descricao') is not None:
@@ -1300,6 +1300,7 @@ def api_dashboard():
         agora = datetime.utcnow()
         return jsonify({
             'setor': setor_rotulo, 'de': di.isoformat(), 'ate': df.isoformat(),
+            'agora': datetime.utcnow().isoformat() + 'Z',
             'turno': turno, 'turnos': [t['nome'] for t in get_turnos()],
             'maquina': filtro_maq, 'maquinas': maquinas_setor,
             'kpis': {

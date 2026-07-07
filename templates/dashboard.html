@@ -252,7 +252,11 @@ function render(j){
 
   html += blocoOee(k);
 
-  html += '<div class="grid-2">'
+  // Produção em tempo real (cards por setor)
+  html += '<div class="mt"><div class="card-title"><i class="bi bi-broadcast"></i>Produção em tempo real <span class="live-dot pulse"></span></div>'
+    + cardsAtivos(j.em_andamento||[]) + '</div>';
+
+  html += '<div class="grid-2 mt">'
     + '<div class="card card-pad"><div class="card-title"><i class="bi bi-graph-up"></i>Produção por dia</div><div class="chart-box"><canvas id="chDia"></canvas></div></div>'
     + '<div class="card card-pad"><div class="card-title"><i class="bi bi-pie-chart-fill"></i>Motivos de pausa</div><div class="chart-box"><canvas id="chPausa"></canvas></div></div>'
     + '</div>';
@@ -262,13 +266,11 @@ function render(j){
     + '<div class="card card-pad"><div class="card-title"><i class="bi bi-cpu-fill"></i>Por máquina</div>'+tabelaRank(j.por_maquina)+'</div>'
     + '</div>';
 
-  if(j.em_andamento && j.em_andamento.length){
-    html += '<div class="mt"><div class="card-title"><i class="bi bi-activity"></i>Em andamento agora</div>'+tabelaAtivos(j.em_andamento)+'</div>';
-  }
-
   html += '<div class="mt"><div class="card-title"><i class="bi bi-clock-history"></i>Últimos apontamentos finalizados</div>'+tabelaUltimos(j.ultimos)+'</div>';
 
   document.getElementById('conteudo').innerHTML = html;
+  ATIVOS = {rows:(j.em_andamento||[]), fetchMs:Date.now()};
+  tickAtivos();
   destruirCharts();
   desenharCharts(j);
 }
@@ -320,14 +322,49 @@ function tagOee(v){
   const c = v>=75?'tag-green':'tag-blue';
   return '<span class="tag '+c+'">'+String(v).replace('.',',')+'%</span>';
 }
-function tabelaAtivos(rows){
-  return '<div class="tabela-wrap"><table class="tbl"><thead><tr>'
-    +'<th>Máquina</th><th>OP</th><th>Operador</th><th>Estado</th><th class="td-num">Tempo prod.</th><th class="td-num">Pausa</th></tr></thead><tbody>'
-    + rows.map(r=>{
-      const tag = r.pausado ? '<span class="tag tag-amber">Pausado</span>' : '<span class="tag tag-green">Produzindo</span>';
-      return '<tr><td><b>'+esc(r.maquina_nome)+'</b></td><td>'+esc(r.op)+'</td><td>'+esc(r.operador_nome)+'</td>'
-        +'<td>'+tag+'</td><td class="td-num mono">'+hms(r.producao_seg)+'</td><td class="td-num mono">'+hms(r.pausa_seg)+'</td></tr>';
-    }).join('') + '</tbody></table></div>';
+let ATIVOS = {rows:[], fetchMs:0};
+function cardsAtivos(rows){
+  if(!rows || !rows.length) return '<div class="empty" style="padding:30px;"><i class="bi bi-cup-hot"></i><p>Nenhuma produção em andamento agora.</p></div>';
+  // agrupa por setor
+  const grupos={};
+  rows.forEach(r=>{ (grupos[r.setor||'—']=grupos[r.setor||'—']||[]).push(r); });
+  return Object.keys(grupos).sort().map(setor=>{
+    const cards = grupos[setor].map(r=>{
+      const pausado = !!r.pausado;
+      const estadoCls = pausado ? 'pausado' : 'produzindo';
+      const badge = pausado
+        ? '<span class="live-badge pausa"><i class="bi bi-pause-circle-fill"></i>'+esc(r.pausa_motivo||'Pausado')+'</span>'
+        : '<span class="live-badge prod"><i class="bi bi-play-circle-fill"></i>Produzindo</span>';
+      return '<div class="live-card '+estadoCls+'">'
+        +'<div class="live-top"><span class="live-maq"><i class="bi bi-cpu-fill"></i>'+esc(r.maquina_nome)+'</span>'+badge+'</div>'
+        +'<div class="live-cron mono" data-prod="'+(r.producao_seg||0)+'" data-pausa="'+(r.pausa_seg||0)+'" data-estado="'+estadoCls+'">'+hms(r.producao_seg||0)+'</div>'
+        +'<div class="live-grid-meta">'
+          +'<div><span>OP</span><b>'+esc(r.op||'—')+'</b></div>'
+          +'<div><span>Peça</span><b>'+esc(r.descricao||r.codigo||'—')+'</b></div>'
+          +'<div><span>Prevista</span><b>'+fmt(r.quantidade_prevista||0)+' pç</b></div>'
+          +'<div><span>Operador</span><b>'+esc(r.operador_nome||'—')+'</b></div>'
+        +'</div>'
+        + (pausado ? '<div class="live-pausatxt"><i class="bi bi-hourglass-split"></i>Em pausa há <span class="live-cron-p mono" data-pausa="'+(r.pausa_seg||0)+'">'+hms(r.pausa_seg||0)+'</span></div>' : '')
+        +'</div>';
+    }).join('');
+    return '<div class="live-setor"><div class="live-setor-tit"><span class="tag tag-blue">'+esc(setor)+'</span> '+grupos[setor].length+' em produção</div>'
+      +'<div class="live-grid">'+cards+'</div></div>';
+  }).join('');
+}
+
+function tickAtivos(){
+  if(!ATIVOS.rows || !ATIVOS.rows.length) return;
+  const delta = Math.max(0, (Date.now()-ATIVOS.fetchMs)/1000);
+  document.querySelectorAll('.live-cron').forEach(el=>{
+    const base=+el.dataset.prod||0;
+    // produtivo só cresce se estiver produzindo
+    const val = (el.dataset.estado==='produzindo') ? base+delta : base;
+    el.textContent = hms(val);
+  });
+  document.querySelectorAll('.live-cron-p').forEach(el=>{
+    const base=+el.dataset.pausa||0;
+    el.textContent = hms(base+delta);   // tempo de pausa cresce enquanto pausado
+  });
 }
 function tabelaUltimos(rows){
   if(!rows || !rows.length) return '<div class="empty"><i class="bi bi-inbox"></i><p>Nenhum apontamento finalizado no período.</p></div>';
@@ -421,6 +458,8 @@ document.getElementById('maquina').addEventListener('change', carregar);
 document.getElementById('btnAtualizar').addEventListener('click', carregar);
 
 slicerHoje();   // marca hoje na linha do tempo e carrega
+
+setInterval(tickAtivos, 1000);   // cronômetros ao vivo dos cards
 
 // Tempo real: re-carrega a cada 20s (monitoramento tipo MES)
 setInterval(()=>{

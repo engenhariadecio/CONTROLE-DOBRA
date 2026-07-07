@@ -33,7 +33,27 @@
       <div class="alert alert-info" style="margin-bottom:16px;">
         <i class="bi bi-cpu-fill"></i><b id="iniMaq">Máquina</b>
       </div>
-      <div class="form-row">
+      <div class="field field-full">
+        <label class="label">OP — Ordem de produção * <span class="hint">bipe o código de barras ou digite</span></label>
+        <div class="scan-field">
+          <i class="bi bi-upc-scan"></i>
+          <input class="input" id="iniOp" placeholder="Bipe ou digite a OP…" autocomplete="off" autocapitalize="characters">
+        </div>
+        <div id="iniOpInfo" class="op-info" style="display:none;"></div>
+      </div>
+      <div class="form-row mt">
+        <div class="field">
+          <label class="label">Código / material</label>
+          <input class="input" id="iniCodigo" placeholder="Auto pela OP" autocomplete="off">
+        </div>
+        <div class="field">
+          <label class="label">Qtd prevista</label>
+          <input class="input" id="iniPrev" inputmode="numeric" placeholder="0" autocomplete="off">
+        </div>
+        <div class="field field-full">
+          <label class="label">Descrição da peça</label>
+          <input class="input" id="iniDesc" placeholder="Auto pela OP" autocomplete="off">
+        </div>
         <div class="field">
           <label class="label">Operador *</label>
           <input class="input" id="iniOperador" placeholder="Nome" autocomplete="off">
@@ -43,11 +63,11 @@
           <input class="input" id="iniMatricula" placeholder="Opcional" autocomplete="off">
         </div>
       </div>
-      <p class="hint">O cronômetro começa agora. A <b>OP é bipada no final</b>, ao concluir a produção. Use PAUSAR nos intervalos.</p>
+      <p class="hint">Cadastre a OP e inicie: o cronômetro começa agora e o gerencial já mostra a peça em produção. Use PAUSAR nos intervalos.</p>
     </div>
     <div class="modal-foot">
       <button class="btn btn-ghost" onclick="fechar('mIniciar')">Cancelar</button>
-      <button class="btn btn-green" id="btnIniciar"><i class="bi bi-play-fill"></i>Iniciar cronômetro</button>
+      <button class="btn btn-green" id="btnIniciar"><i class="bi bi-play-fill"></i>Iniciar produção</button>
     </div>
   </div>
 </div>
@@ -111,27 +131,8 @@
         <div class="big mono" id="finTempo">00:00:00</div>
         <div class="run-sub">Tempo produtivo (descontadas as pausas)</div>
       </div>
-      <div class="field field-full mt">
-        <label class="label">OP — Ordem de produção * <span class="hint">bipe o código de barras ou digite</span></label>
-        <div class="scan-field">
-          <i class="bi bi-upc-scan"></i>
-          <input class="input" id="finOp" placeholder="Bipe ou digite a OP…" autocomplete="off" autocapitalize="characters">
-        </div>
-        <div id="finOpInfo" class="op-info" style="display:none;"></div>
-      </div>
+      <div class="alert alert-info mt"><i class="bi bi-upc-scan"></i>OP <b id="finOpLbl">—</b> <span id="finPecaLbl" class="muted"></span></div>
       <div class="form-row mt">
-        <div class="field">
-          <label class="label">Código / material</label>
-          <input class="input" id="finCodigo" placeholder="Auto pela OP" autocomplete="off">
-        </div>
-        <div class="field">
-          <label class="label">Qtd prevista</label>
-          <input class="input" id="finPrev" inputmode="numeric" placeholder="0" autocomplete="off">
-        </div>
-        <div class="field field-full">
-          <label class="label">Descrição</label>
-          <input class="input" id="finDesc" placeholder="Auto pela OP" autocomplete="off">
-        </div>
         <div class="field">
           <label class="label">Qtd produzida *</label>
           <input class="input" id="finQtd" inputmode="numeric" placeholder="0" autocomplete="off">
@@ -249,17 +250,46 @@ function render(){
 function abrirMaq(id){
   const m = ESTADO.maquinas.find(x=>x.id===id); if(!m) return;
   if(!m.apontamento){
-    // modal iniciar — só operador; a OP é bipada no final
+    // modal iniciar — cadastra a OP e depois inicia
     document.getElementById('iniMaq').textContent = m.nome + (m.codigo?' · '+m.codigo:'');
+    document.getElementById('iniOp').value='';
+    document.getElementById('iniCodigo').value='';
+    document.getElementById('iniPrev').value='';
+    document.getElementById('iniDesc').value='';
+    document.getElementById('iniOpInfo').style.display='none';
     document.getElementById('iniOperador').value='{{ session.get("nome")|e }}';
     document.getElementById('iniMatricula').value='{{ session.get("matricula")|e }}';
     document.getElementById('btnIniciar').dataset.maq=id;
     abrir('mIniciar');
-    setTimeout(()=>{const c=document.getElementById('iniOperador');c.focus();c.select();},150);
+    setTimeout(()=>{const c=document.getElementById('iniOp');c.focus();c.select();},150);
   }else{
     abrirRun(m);
   }
 }
+
+// Consulta a OP na lista mestra e preenche código/descrição/qtd prevista.
+async function consultarOpIni(){
+  const op=document.getElementById('iniOp').value.trim();
+  const info=document.getElementById('iniOpInfo');
+  if(!op){ info.style.display='none'; return; }
+  try{
+    const j=await api('/api/buscar_ordem/'+encodeURIComponent(op));
+    if(j.encontrado){
+      document.getElementById('iniOp').value=j.ordem;
+      document.getElementById('iniCodigo').value=j.material||'';
+      document.getElementById('iniDesc').value=j.texto_breve||'';
+      if(j.quantidade) document.getElementById('iniPrev').value=j.quantidade;
+      info.className='op-info ok'; info.style.display='block';
+      info.innerHTML='<i class="bi bi-check-circle-fill"></i> '+esc(j.material||'')+' — '+esc(j.texto_breve||'')+(j.quantidade?(' · prev. '+j.quantidade):'');
+      document.getElementById('iniOperador').focus();
+    }else{
+      info.className='op-info nf'; info.style.display='block';
+      info.innerHTML='<i class="bi bi-exclamation-triangle-fill"></i> OP não encontrada na lista mestra — você pode preencher manualmente.';
+    }
+  }catch(e){ info.style.display='none'; }
+}
+document.getElementById('iniOp').addEventListener('keydown',(ev)=>{ if(ev.key==='Enter'){ev.preventDefault(); consultarOpIni();} });
+document.getElementById('iniOp').addEventListener('blur', consultarOpIni);
 
 function abrirRun(m){
   RUN_MAQ = m.id;
@@ -295,13 +325,18 @@ function abrirRun(m){
 
 document.getElementById('btnIniciar').addEventListener('click', async (e)=>{
   const id = +e.target.dataset.maq;
+  const op = document.getElementById('iniOp').value.trim();
   const operador = document.getElementById('iniOperador').value.trim();
+  if(!op){ toast('Cadastre a OP','err'); document.getElementById('iniOp').focus(); return; }
   if(!operador){ toast('Informe o operador','err'); return; }
   e.target.disabled=true;
   try{
     await api('/api/apontamento/iniciar','POST',{
-      maquina_id:id, operador_nome:operador,
+      maquina_id:id, op:op, operador_nome:operador,
       operador_matricula:document.getElementById('iniMatricula').value.trim(),
+      codigo:document.getElementById('iniCodigo').value.trim(),
+      descricao:document.getElementById('iniDesc').value.trim(),
+      quantidade_prevista:document.getElementById('iniPrev').value.trim(),
     });
     fechar('mIniciar'); toast('Produção iniciada','ok');
     await carregar();
@@ -356,7 +391,7 @@ async function cancelar(id){
   }catch(e){ toast(e.message,'err'); }
 }
 
-// ── Finalizar (OP bipada no final, puxando dados da lista mestra) ──
+// ── Finalizar (OP já foi cadastrada no início) ──
 let FINAL_MAQ=null;
 function abrirFinal(id){
   const m=ESTADO.maquinas.find(x=>x.id===id); if(!m||!m.apontamento) return;
@@ -364,60 +399,22 @@ function abrirFinal(id){
   const ap=m.apontamento;
   const {prod} = tempos(ap);
   document.getElementById('finTempo').textContent=hms(prod);
-  document.getElementById('finOp').value = ap.op || '';
-  document.getElementById('finCodigo').value = ap.codigo || '';
-  document.getElementById('finDesc').value = ap.descricao || '';
-  document.getElementById('finPrev').value = ap.quantidade_prevista || '';
+  document.getElementById('finOpLbl').textContent = ap.op || '—';
+  document.getElementById('finPecaLbl').textContent = ap.descricao ? ('· '+ap.descricao) : '';
   document.getElementById('finQtd').value = ap.quantidade_prevista || '';
   document.getElementById('finRefugo').value='';
   document.getElementById('finObs').value='';
-  document.getElementById('finOpInfo').style.display='none';
   fechar('mRun'); abrir('mFinal');
-  setTimeout(()=>{const c=document.getElementById('finOp');c.focus();c.select();},150);
+  setTimeout(()=>{const c=document.getElementById('finQtd');c.focus();c.select();},150);
 }
-
-// Consulta a OP na lista mestra e preenche código/descrição/qtd prevista.
-async function consultarOp(){
-  const op=document.getElementById('finOp').value.trim();
-  const info=document.getElementById('finOpInfo');
-  if(!op){ info.style.display='none'; return; }
-  try{
-    const j=await api('/api/buscar_ordem/'+encodeURIComponent(op));
-    if(j.encontrado){
-      document.getElementById('finOp').value = j.ordem;
-      document.getElementById('finCodigo').value = j.material || '';
-      document.getElementById('finDesc').value = j.texto_breve || '';
-      if(j.quantidade){
-        document.getElementById('finPrev').value = j.quantidade;
-        if(!document.getElementById('finQtd').value) document.getElementById('finQtd').value = j.quantidade;
-      }
-      info.className='op-info ok'; info.style.display='block';
-      info.innerHTML='<i class="bi bi-check-circle-fill"></i> '+esc(j.material||'')+' — '+esc(j.texto_breve||'')+(j.quantidade?(' · prev. '+j.quantidade):'');
-      document.getElementById('finQtd').focus();
-    }else{
-      info.className='op-info nf'; info.style.display='block';
-      info.innerHTML='<i class="bi bi-exclamation-triangle-fill"></i> OP não encontrada na lista mestra — você pode preencher manualmente.';
-    }
-  }catch(e){ info.style.display='none'; }
-}
-document.getElementById('finOp').addEventListener('keydown',(ev)=>{
-  if(ev.key==='Enter'){ ev.preventDefault(); consultarOp(); }
-});
-document.getElementById('finOp').addEventListener('blur', consultarOp);
 
 document.getElementById('btnFinalizar').addEventListener('click', async (e)=>{
-  const op=document.getElementById('finOp').value.trim();
   const qtd=document.getElementById('finQtd').value.trim();
-  if(!op){ toast('Bipe ou informe a OP','err'); document.getElementById('finOp').focus(); return; }
   if(qtd===''){ toast('Informe a quantidade produzida','err'); return; }
   e.target.disabled=true;
   try{
     await api('/api/apontamento/finalizar','POST',{
       maquina_id:FINAL_MAQ,
-      op:op,
-      codigo:document.getElementById('finCodigo').value.trim(),
-      descricao:document.getElementById('finDesc').value.trim(),
-      quantidade_prevista:document.getElementById('finPrev').value.trim(),
       quantidade_produzida:qtd,
       refugo:document.getElementById('finRefugo').value.trim(),
       observacao:document.getElementById('finObs').value.trim(),
