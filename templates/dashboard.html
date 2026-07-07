@@ -46,9 +46,25 @@
   </div>
 </div>
 
-<div class="card card-pad" style="margin-bottom:16px;">
-  <div class="card-title"><i class="bi bi-bar-chart-steps"></i>Linha do tempo — <span id="tlDia">hoje</span></div>
-  <div id="timeline"><div class="center-load"><span class="spin"></span></div></div>
+<div class="tl" style="margin-bottom:16px;">
+  <div class="tl-head">
+    <span class="tl-title"><i class="bi bi-calendar3"></i>Linha do tempo <span class="tl-hint">— arraste (ou toque) para selecionar o período</span></span>
+    <div class="tl-levels">
+      <button data-niv="ano" onclick="setNivel('ano')">Ano</button>
+      <button data-niv="mes" onclick="setNivel('mes')">Mês</button>
+      <button data-niv="dia" class="on" onclick="setNivel('dia')">Dia</button>
+    </div>
+  </div>
+  <div class="tl-nav" id="tlNav">
+    <button class="tl-nav-btn" onclick="navCtx(-1)" aria-label="Anterior"><i class="bi bi-chevron-left"></i></button>
+    <span class="tl-nav-lbl" id="tlNavLbl">—</span>
+    <button class="tl-nav-btn" onclick="navCtx(1)" aria-label="Próximo"><i class="bi bi-chevron-right"></i></button>
+  </div>
+  <div class="tl-strip-wrap"><div class="tl-strip" id="tlStrip"></div></div>
+  <div class="tl-foot">
+    <span class="tl-periodo" id="tlPeriodo"><i class="bi bi-calendar-check"></i>Todos os períodos</span>
+    <button class="tl-clear" id="tlClear" onclick="tlLimpar()"><i class="bi bi-x-circle"></i>Limpar</button>
+  </div>
 </div>
 
 <div id="conteudo">
@@ -82,15 +98,16 @@ async function carregar(){
   const de=document.getElementById('de').value, ate=document.getElementById('ate').value;
   const setor=document.getElementById('setor').value;
   const turno=document.getElementById('turno').value;
-  const q=`?de=${de}&ate=${ate}&setor=${encodeURIComponent(setor)}&turno=${encodeURIComponent(turno)}`;
+  const maquina=document.getElementById('maquina').value;
+  const q=`?de=${de}&ate=${ate}&setor=${encodeURIComponent(setor)}&turno=${encodeURIComponent(turno)}&maquina=${encodeURIComponent(maquina)}`;
   document.getElementById('btnExcel').href = '/api/download/apontamentos'+q;
   const box=document.getElementById('conteudo');
   try{
     const j = await api('/api/dashboard/dados'+q);
-    document.getElementById('setorNome').textContent = j.setor + (j.turno?(' · '+j.turno):'');
+    document.getElementById('setorNome').textContent = j.setor + (j.turno?(' · '+j.turno):'') + (j.maquina?(' · '+j.maquina):'');
     preencherTurnos(j.turnos, turno);
+    preencherMaquinas(j.maquinas, maquina);
     render(j);
-    carregarTimeline();
   }catch(e){
     box.innerHTML = '<div class="empty"><i class="bi bi-exclamation-circle"></i><p>'+esc(e.message)+'</p></div>';
   }
@@ -98,66 +115,117 @@ async function carregar(){
 
 function preencherTurnos(lista, atual){
   const sel=document.getElementById('turno');
-  if(!sel || sel.dataset.pronto) return;   // preenche uma vez
+  if(!sel || sel.dataset.pronto) return;
   (lista||[]).forEach(t=>{ const o=document.createElement('option'); o.value=t; o.textContent=t; sel.appendChild(o); });
   if(atual) sel.value=atual;
   sel.dataset.pronto='1';
 }
+function preencherMaquinas(lista, atual){
+  const sel=document.getElementById('maquina');
+  if(!sel || sel.dataset.pronto) return;
+  (lista||[]).forEach(m=>{ const o=document.createElement('option'); o.value=m; o.textContent=m; sel.appendChild(o); });
+  if(atual) sel.value=atual;
+  sel.dataset.pronto='1';
+}
 
-// ── Linha do tempo (por máquina) ──────────────────────────────────────
-async function carregarTimeline(){
-  const de=document.getElementById('de').value;
-  const setor=document.getElementById('setor').value;
-  const turno=document.getElementById('turno').value;
-  const maquina=document.getElementById('maquina').value;
-  const box=document.getElementById('timeline');
-  document.getElementById('tlDia').textContent = de || 'hoje';
-  const q=`?de=${de}&setor=${encodeURIComponent(setor)}&turno=${encodeURIComponent(turno)}&maquina=${encodeURIComponent(maquina)}`;
-  try{
-    const j=await api('/api/dashboard/timeline'+q);
-    // popular filtro de máquina (uma vez)
-    const selM=document.getElementById('maquina');
-    if(!selM.dataset.pronto){
-      (j.maquinas||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;selM.appendChild(o);});
-      selM.dataset.pronto='1';
+// ── Linha do tempo (seletor de período estilo Banho: Ano / Mês / Dia) ──
+const MESES_PT=['JAN','FEV','MAR','ABR','MAI','JUN','JUL','AGO','SET','OUT','NOV','DEZ'];
+const MESES_LB=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
+const NOMES_DS=['dom','seg','ter','qua','qui','sex','sáb'];
+let _niv='dia', _anoCtx=new Date().getFullYear(), _mesCtx=new Date().getMonth()+1;
+let _segs=[], _selA=null, _selB=null;
+
+function _ultimoDia(ano,mes){ return new Date(ano,mes,0).getDate(); }
+
+function construirSegs(){
+  const anoAtual=new Date().getFullYear();
+  _segs=[];
+  if(_niv==='ano'){
+    for(let a=anoAtual-3;a<=anoAtual;a++)
+      _segs.push({lbl:String(a),sub:'',de:a+'-01-01',ate:a+'-12-31',txt:'ano de '+a});
+  }else if(_niv==='mes'){
+    for(let m=1;m<=12;m++){
+      const ud=_ultimoDia(_anoCtx,m), mm=String(m).padStart(2,'0');
+      _segs.push({lbl:MESES_PT[m-1],sub:String(_anoCtx),de:_anoCtx+'-'+mm+'-01',
+        ate:_anoCtx+'-'+mm+'-'+String(ud).padStart(2,'0'),txt:MESES_LB[m-1]+'/'+_anoCtx});
     }
-    box.innerHTML = renderTimeline(j);
-  }catch(e){
-    box.innerHTML='<div class="empty"><i class="bi bi-exclamation-circle"></i><p>'+esc(e.message)+'</p></div>';
+  }else{
+    const ud=_ultimoDia(_anoCtx,_mesCtx), mm=String(_mesCtx).padStart(2,'0');
+    for(let d=1;d<=ud;d++){
+      const wd=new Date(_anoCtx,_mesCtx-1,d).getDay(), dd=String(d).padStart(2,'0');
+      const iso=_anoCtx+'-'+mm+'-'+dd;
+      _segs.push({lbl:dd,sub:NOMES_DS[wd],de:iso,ate:iso,txt:dd+'/'+mm+'/'+_anoCtx,fds:(wd===0||wd===6)});
+    }
   }
 }
 
-function renderTimeline(j){
-  const linhas=j.linhas||[];
-  if(!linhas.length) return '<div class="empty"><i class="bi bi-inbox"></i><p>Nenhuma máquina no setor.</p></div>';
-  // régua de horas (0,3,6,...,24)
-  let ruler='<div class="tl-ruler"><div class="tl-rlabel"></div><div class="tl-rtrack">';
-  for(let h=0;h<=24;h+=3){ ruler+='<span class="tl-htick" style="left:'+(h/24*100)+'%">'+String(h).padStart(2,'0')+'h</span>'; }
-  ruler+='</div></div>';
+function renderSlicer(){
+  construirSegs();
+  const nav=document.getElementById('tlNav'), lbl=document.getElementById('tlNavLbl');
+  if(_niv==='ano'){ nav.style.display='none'; }
+  else if(_niv==='mes'){ nav.style.display=''; lbl.textContent=_anoCtx; }
+  else{ nav.style.display=''; lbl.textContent=MESES_PT[_mesCtx-1]+' '+_anoCtx; }
+  document.getElementById('tlStrip').innerHTML=_segs.map((s,i)=>
+    '<button class="tl-seg'+(s.fds?' fds':'')+'" data-idx="'+i+'" type="button">'
+    +(s.sub?'<span class="tl-seg-sub">'+s.sub+'</span>':'')
+    +'<span class="tl-seg-lbl">'+s.lbl+'</span></button>').join('');
+  bindTimeline(); pintarSel();
+}
 
-  const linhasHtml = linhas.map(l=>{
-    const barras = (l.segmentos||[]).map(s=>{
-      const left=s.ini/1440*100, w=Math.max(0.6,(s.fim-s.ini)/1440*100);
-      const cls = s.estado==='finalizado' ? 'prod' : (s.estado==='pausado'?'pausa':'ativo');
-      const tip = 'OP '+s.op+' · '+s.inicio_txt+'–'+s.fim_txt+' · '+fmt(s.produzida)+' pç'
-        + (s.oee!=null?(' · OEE '+String(s.oee).replace('.',',')+'%'):'');
-      // pausas dentro da barra (posição relativa à barra)
-      const paus = (s.pausas||[]).map(p=>{
-        const span=(s.fim-s.ini)||1;
-        const pl=Math.max(0,(p.ini-s.ini)/span*100), pw=Math.max(1.2,(p.fim-p.ini)/span*100);
-        return '<span class="tl-pausa" style="left:'+pl+'%;width:'+pw+'%" title="Pausa: '+esc(p.motivo)+'"></span>';
-      }).join('');
-      return '<div class="tl-bar '+cls+'" style="left:'+left+'%;width:'+w+'%" title="'+esc(tip)+'"><span class="tl-bar-op">'+esc(s.op)+'</span>'+paus+'</div>';
-    }).join('');
-    return '<div class="tl-row"><div class="tl-rlabel">'+esc(l.maquina)+'</div>'
-      +'<div class="tl-rtrack">'+barras+'</div></div>';
-  }).join('');
-
-  const legenda='<div class="tl-legenda">'
-    +'<span><i class="dot prod"></i>Produção</span>'
-    +'<span><i class="dot ativo"></i>Em andamento</span>'
-    +'<span><i class="dot pausa"></i>Pausa</span></div>';
-  return ruler + linhasHtml + legenda;
+let _dragging=false;
+function _segIdxFromPoint(x,y){ const el=document.elementFromPoint(x,y); const s=el&&el.closest?el.closest('.tl-seg'):null; return s?+s.dataset.idx:null; }
+function _autoScroll(x){ const w=document.querySelector('.tl-strip-wrap'); if(!w)return; const r=w.getBoundingClientRect(),e=46; if(x>r.right-e)w.scrollLeft+=16; else if(x<r.left+e)w.scrollLeft-=16; }
+function bindTimeline(){
+  const strip=document.getElementById('tlStrip');
+  if(!strip||strip._bound)return; strip._bound=true;
+  strip.addEventListener('pointerdown',e=>{ const s=e.target.closest('.tl-seg'); if(!s)return; e.preventDefault(); _dragging=true; _selA=_selB=+s.dataset.idx; try{strip.setPointerCapture(e.pointerId);}catch(_){} pintarSel(); });
+  strip.addEventListener('pointermove',e=>{ if(!_dragging)return; e.preventDefault(); _autoScroll(e.clientX); const i=_segIdxFromPoint(e.clientX,e.clientY); if(i!==null&&i!==_selB){_selB=i;pintarSel();} });
+  const fim=e=>{ if(!_dragging)return; _dragging=false; try{strip.releasePointerCapture(e.pointerId);}catch(_){} aplicarSlicer(); };
+  strip.addEventListener('pointerup',fim); strip.addEventListener('pointercancel',fim);
+}
+function pintarSel(){
+  const segs=document.querySelectorAll('.tl-seg');
+  if(_selA===null){ segs.forEach(s=>s.classList.remove('sel','ini','fim')); return; }
+  const lo=Math.min(_selA,_selB),hi=Math.max(_selA,_selB);
+  segs.forEach(s=>{const i=+s.dataset.idx; s.classList.toggle('sel',i>=lo&&i<=hi); s.classList.toggle('ini',i===lo); s.classList.toggle('fim',i===hi);});
+}
+function aplicarSlicer(){
+  if(_selA===null)return;
+  const lo=Math.min(_selA,_selB),hi=Math.max(_selA,_selB), a=_segs[lo], b=_segs[hi];
+  document.getElementById('de').value=a.de;
+  document.getElementById('ate').value=b.ate;
+  document.getElementById('tlPeriodo').innerHTML='<i class="bi bi-calendar-check"></i>'+((lo===hi)?a.txt:(a.txt+' – '+b.txt));
+  document.getElementById('tlClear').classList.add('on');
+  document.querySelectorAll('.chip').forEach(c=>c.classList.remove('ativo'));
+  carregar();
+}
+function setNivel(n){
+  if(_niv===n)return;
+  _niv=n; _selA=_selB=null;
+  document.querySelectorAll('.tl-levels button').forEach(b=>b.classList.toggle('on',b.dataset.niv===n));
+  renderSlicer();
+}
+function navCtx(dir){
+  if(_niv==='mes'){ _anoCtx+=dir; }
+  else if(_niv==='dia'){ _mesCtx+=dir; if(_mesCtx>12){_mesCtx=1;_anoCtx++;} if(_mesCtx<1){_mesCtx=12;_anoCtx--;} }
+  _selA=_selB=null; renderSlicer();
+}
+function tlLimpar(){
+  _selA=_selB=null;
+  document.getElementById('tlPeriodo').innerHTML='<i class="bi bi-calendar-check"></i>Todos os períodos';
+  document.getElementById('tlClear').classList.remove('on');
+  pintarSel();
+  // volta para hoje
+  setPeriodo('hoje');
+}
+function slicerHoje(){
+  _niv='dia';
+  const h=new Date(); _anoCtx=h.getFullYear(); _mesCtx=h.getMonth()+1;
+  document.querySelectorAll('.tl-levels button').forEach(b=>b.classList.toggle('on',b.dataset.niv==='dia'));
+  renderSlicer();
+  const idx=h.getDate()-1; _selA=_selB=idx; pintarSel(); aplicarSlicer();
+  const seg=document.querySelector('.tl-seg[data-idx="'+idx+'"]');
+  if(seg&&seg.scrollIntoView)seg.scrollIntoView({inline:'center',block:'nearest'});
 }
 
 function render(j){
@@ -340,10 +408,10 @@ document.getElementById('de').addEventListener('change', carregar);
 document.getElementById('ate').addEventListener('change', carregar);
 document.getElementById('setor').addEventListener('change', carregar);
 document.getElementById('turno').addEventListener('change', carregar);
-document.getElementById('maquina').addEventListener('change', carregarTimeline);
+document.getElementById('maquina').addEventListener('change', carregar);
 document.getElementById('btnAtualizar').addEventListener('click', carregar);
 
-setPeriodo('hoje');
+slicerHoje();   // marca hoje na linha do tempo e carrega
 
 // Tempo real: re-carrega a cada 20s (monitoramento tipo MES)
 setInterval(()=>{

@@ -42,8 +42,9 @@ da lista e um botão para recarregar. O arquivo de exemplo já acompanha o proje
   refugo e quantos apontamentos estão em andamento agora.
 - **OEE** em destaque (medidor + os 3 pilares: Disponibilidade, Desempenho e
   Qualidade), com a meta de OEE como referência.
-- **Linha do tempo por máquina** (estilo Banho): barras de produção e pausas ao
-  longo do dia, com filtro por **turno** e por **máquina**.
+- **Linha do tempo** (estilo Banho): seletor de período em Ano / Mês / Dia —
+  arraste ou toque para escolher o intervalo. Filtros adicionais por **turno**
+  e por **máquina** aplicam-se a todo o painel e à exportação Excel.
 - Gráficos de produção por dia e de motivos de pausa.
 - Rankings por operador e por máquina (com OEE) e tabela ao vivo do que está
   em andamento agora.
