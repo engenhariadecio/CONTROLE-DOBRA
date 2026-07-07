@@ -19,7 +19,9 @@ Banco: PostgreSQL (produção, ex.: Railway via DATABASE_URL).
 """
 import os
 import io
+import csv
 import json
+import threading
 from datetime import datetime, timedelta, date as ddate
 from functools import wraps
 
@@ -68,6 +70,130 @@ if DB_URL.startswith('sqlite'):
 engine = create_engine(DB_URL, **_engine_kwargs)
 Session = scoped_session(sessionmaker(bind=engine, autoflush=False, future=True))
 Base = declarative_base()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lista mestra do SAP (mesma abordagem do sistema Banho): arquivo carregado em
+# memória. Usada para "bipar" a OP e puxar material, texto breve e quantidade.
+#   Arquivos aceitos na raiz: lista_mestra.xlsx / .csv / .txt (ou o exemplo).
+# ─────────────────────────────────────────────────────────────────────────────
+_lista_lock = threading.Lock()
+_lista_por_ordem = {}
+_lista_status = {'carregada': False, 'total': 0, 'erro': None, 'arquivo': ''}
+
+LISTA_MESTRA_ARQUIVOS = [
+    'lista_mestra.xlsx', 'lista_mestra.csv', 'lista_mestra.txt',
+    'exemplo_lista_mestra_sap.txt',
+]
+
+
+def _norm_ordem(v):
+    """Normaliza a OP bipada: remove '.0', e se o código de barras vier com mais
+    de 8 dígitos, descarta 4 prefixos e 4 sufixos (padrão do leitor do Banho)."""
+    s = str(v).strip()
+    if s.endswith('.0'):
+        s = s[:-2]
+    digitos = ''.join(c for c in s if c.isdigit())
+    if len(digitos) > 8:
+        digitos = digitos[4:-4]
+    return digitos if digitos else s
+
+
+def _achar_arquivo_mestre():
+    base = os.path.dirname(os.path.abspath(__file__))
+    for nome in LISTA_MESTRA_ARQUIVOS:
+        caminho = os.path.join(base, nome)
+        if os.path.isfile(caminho):
+            return caminho
+    return None
+
+
+def _achar_colunas(linhas):
+    def norm(s):
+        return str(s).strip().lower() if s is not None else ''
+    for i, row in enumerate(linhas[:10]):
+        if not row:
+            continue
+        idx = {}
+        for j, nome in enumerate(norm(c) for c in row):
+            if nome == 'ordem' and 'ordem' not in idx:
+                idx['ordem'] = j
+            elif nome == 'material' and 'material' not in idx:
+                idx['material'] = j
+            elif 'texto breve' in nome and 'texto' not in idx:
+                idx['texto'] = j
+            elif ('quantidade da ordem' in nome or nome == 'quantidade total'
+                  or nome == 'quantidade') and 'qtd' not in idx:
+                idx['qtd'] = j
+        if 'ordem' in idx and 'material' in idx:
+            return i, idx
+    return None
+
+
+def _parsear_linhas_mestre(linhas):
+    achado = _achar_colunas(linhas)
+    if achado:
+        cab, col = achado
+        i_ordem, i_mat = col.get('ordem', 0), col.get('material', 1)
+        i_texto, i_qtd = col.get('texto'), col.get('qtd')
+        inicio = cab + 1
+    else:
+        i_ordem, i_mat, i_texto, i_qtd, inicio = 0, 2, 3, 4, 0
+
+    def val(row, idx):
+        if idx is None or idx >= len(row) or row[idx] is None:
+            return ''
+        return str(row[idx]).strip()
+
+    por_ordem = {}
+    for row in linhas[inicio:]:
+        if not row or all(c is None or str(c).strip() == '' for c in row):
+            continue
+        ordem = _norm_ordem(row[i_ordem]) if i_ordem < len(row) and row[i_ordem] is not None else ''
+        if not ordem or not ordem.replace('.', '').isdigit():
+            continue
+        q = val(row, i_qtd)
+        try:
+            qtd = int(float(q)) if q else 0
+        except (ValueError, TypeError):
+            qtd = 0
+        por_ordem[ordem] = {'ordem': ordem, 'material': val(row, i_mat),
+                            'texto_breve': val(row, i_texto), 'quantidade': qtd}
+    return por_ordem
+
+
+def carregar_lista_mestre():
+    global _lista_por_ordem, _lista_status
+    caminho = _achar_arquivo_mestre()
+    if not caminho:
+        with _lista_lock:
+            _lista_status = {'carregada': False, 'total': 0, 'arquivo': '',
+                             'erro': 'Arquivo lista_mestra.xlsx/.csv/.txt não encontrado.'}
+        return
+    try:
+        nome = caminho.lower()
+        linhas = []
+        if nome.endswith('.csv') or nome.endswith('.txt'):
+            with open(caminho, encoding='utf-8-sig', errors='replace') as f:
+                raw = f.read()
+            sep = '\t' if raw.count('\t') > raw.count(';') and raw.count('\t') > raw.count(',') \
+                else (';' if raw.count(';') > raw.count(',') else ',')
+            linhas = list(csv.reader(io.StringIO(raw), delimiter=sep))
+        else:
+            from openpyxl import load_workbook as _lw
+            wb = _lw(caminho, read_only=True, data_only=True)
+            for row in wb.active.iter_rows(values_only=True):
+                linhas.append(list(row))
+        por_ordem = _parsear_linhas_mestre(linhas)
+        with _lista_lock:
+            _lista_por_ordem = por_ordem
+            _lista_status = {'carregada': True, 'total': len(por_ordem),
+                             'arquivo': os.path.basename(caminho), 'erro': None}
+        print(f'[lista_mestra] Carregada: {len(por_ordem)} ordens de "{os.path.basename(caminho)}".')
+    except Exception as e:  # noqa: BLE001
+        with _lista_lock:
+            _lista_status = {'carregada': False, 'total': 0, 'arquivo': '', 'erro': str(e)}
+        print(f'[lista_mestra] ERRO ao carregar: {e}')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -297,7 +423,7 @@ class ApontamentoLog(Base):
 # ─────────────────────────────────────────────────────────────────────────────
 SETORES_PADRAO = ['Dobra', 'Corte', 'Estamparia', 'Solda', 'Acabamento']
 MOTIVOS_PAUSA_PADRAO = [
-    'Café', 'Almoço', 'Janta', 'Ginástica laboral', 'Banheiro',
+    'Almoço/Janta', 'Café', 'Laboral', 'Banheiro',
     'Manutenção', 'Falta de material', 'Setup / troca de ferramenta', 'Reunião',
 ]
 
@@ -516,6 +642,11 @@ with app.app_context():
         bootstrap()
     except Exception as e:
         print('[bootstrap] ERRO:', e)
+
+try:
+    carregar_lista_mestre()
+except Exception as e:  # noqa: BLE001
+    print('[lista_mestra] ERRO ao carregar no startup:', e)
 
 
 @app.teardown_appcontext
@@ -742,6 +873,34 @@ def api_operadores():
         db.close()
 
 
+@app.route('/api/buscar_ordem/<path:ordem>')
+@api_login_obrigatorio
+def api_buscar_ordem(ordem):
+    """Bipar/consultar a OP na lista mestra do SAP."""
+    o = _norm_ordem(ordem)
+    with _lista_lock:
+        item = _lista_por_ordem.get(o)
+    if item:
+        return jsonify({'encontrado': True, **item})
+    return jsonify({'encontrado': False, 'ordem': o})
+
+
+@app.route('/api/lista_status')
+@api_login_obrigatorio
+def api_lista_status():
+    with _lista_lock:
+        st = dict(_lista_status)
+    return jsonify(st)
+
+
+@app.route('/api/admin/lista/recarregar', methods=['POST'])
+@perfil_obrigatorio('admin')
+def api_lista_recarregar():
+    carregar_lista_mestre()
+    with _lista_lock:
+        return jsonify({'ok': True, **_lista_status})
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # API — grade de máquinas (estado atual do painel do operador)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -795,12 +954,10 @@ def _float(v, padrao=0.0):
 def api_iniciar():
     d = request.get_json(force=True, silent=True) or {}
     maquina_id = _int(d.get('maquina_id'), 0)
-    op = (d.get('op') or '').strip()
+    op = (d.get('op') or '').strip()          # opcional no início — a OP é bipada no final
     operador = (d.get('operador_nome') or session.get('nome') or '').strip()
     if not maquina_id:
         return jsonify({'ok': False, 'erro': 'Máquina inválida.'}), 400
-    if not op:
-        return jsonify({'ok': False, 'erro': 'Informe a OP (ordem de produção).'}), 400
     if not operador:
         return jsonify({'ok': False, 'erro': 'Informe o operador.'}), 400
 
@@ -925,6 +1082,17 @@ def api_finalizar():
             ap.pausa_motivo = ''
         ap.fim = agora
         ap.producao_seg = round(ap.produtivo_seg(agora), 1)
+        # OP bipada no final: puxa OP e dados da lista mestra do SAP.
+        op = (d.get('op') or '').strip()
+        if not op:
+            return jsonify({'ok': False, 'erro': 'Bipe ou informe a OP para finalizar.'}), 400
+        ap.op = op
+        if d.get('codigo') is not None:
+            ap.codigo = (d.get('codigo') or '').strip()
+        if d.get('descricao') is not None:
+            ap.descricao = (d.get('descricao') or '').strip()
+        if d.get('quantidade_prevista') is not None:
+            ap.quantidade_prevista = _int(d.get('quantidade_prevista'), 0)
         ap.quantidade_produzida = _int(d.get('quantidade_produzida'), 0)
         ap.refugo = _int(d.get('refugo'), 0)
         if d.get('observacao') is not None:

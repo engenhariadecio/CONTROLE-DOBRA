@@ -1,29 +1,39 @@
-# Controle de Produção (MES)
+# DECIOMES
 
-Sistema web de **controle integrado de produção** para todos os setores da
-fábrica (Corte, Dobra, Solda, Estamparia, Acabamento…). O operador escolhe a
-máquina, **inicia** o cronômetro, **bipa ou digita a OP**, **pausa** nos
-intervalos (café, laboral, almoço, janta…) e **finaliza** com a quantidade
-produzida. A gerência acompanha em um **painel de visualização em tempo real**
-(histórico + produção ao vivo + OEE), e o **admin** configura e ajusta tudo.
+Sistema web de **controle integrado de produção** (MES) da Décio, para todas as
+máquinas e setores da fábrica — Corte (puncionadeiras, laser), Estamparia
+(furadeira, prensas), Dobra (dobradeiras), Solda (solda ponto, solda) e
+Acabamento (polimento, acabamento). O operador escolhe a máquina, **inicia** o
+cronômetro, **pausa** nos intervalos (Almoço/Janta, Café, Laboral, Outros…) e,
+ao concluir, **bipa a OP** — que puxa material, descrição e quantidade da
+**lista mestra do SAP**. A gerência acompanha em um **painel de visualização em
+tempo real** (histórico + produção ao vivo + OEE), e o **admin** configura e
+ajusta tudo.
 
 Cada **usuário pertence a um setor** (sua área), e as máquinas são cadastradas
-por setor — então o mesmo sistema atende todos os setores de forma integrada,
-sem misturar os dados.
+por setor — então o mesmo sistema atende toda a fábrica de forma integrada.
 
 ---
 
 ## O que já vem pronto
 
 **Painel do operador** (`/painel`)
-- Grade de máquinas do setor, com status ao vivo (Livre / Produzindo / Pausado).
-- Iniciar → **bipe a OP com o leitor de código de barras ou digite**; informa
-  operador, código, qtd prevista. (O leitor envia Enter ao final: se o operador
-  já estiver preenchido, a produção inicia sozinha ao bipar.)
-- Cronômetro por máquina que corre em tempo real.
-- **Pausar / Retomar** com motivo (café, almoço, manutenção…). O tempo pausado
-  é **descontado** do tempo produtivo.
-- Finalizar → quantidade produzida, refugo e observação.
+- Grade de máquinas do setor, com status ao vivo (Livre / Produzindo / Pausado)
+  nas cores da Décio (azul e verde).
+- **Iniciar** → informa só o operador; o cronômetro começa na hora.
+- **Pausar / Retomar** com os motivos do Banho (Almoço/Janta, Café, Laboral,
+  Outros…) em botões grandes; o tempo pausado é **descontado** do produtivo.
+- **Finalizar** → **bipe a OP** (leitor de código de barras ou digite). A OP é
+  buscada na **lista mestra do SAP** e preenche material, descrição e
+  quantidade automaticamente; depois informe a quantidade produzida e o refugo.
+
+### Lista mestra do SAP (mesma do Banho)
+Coloque o arquivo **`lista_mestra.xlsx`** (ou `.csv`/`.txt`) na raiz do
+projeto — mesmo formato do sistema Banho (colunas Ordem, Material, Texto breve,
+Quantidade). O sistema a carrega em memória no startup; a bipagem da OP no final
+usa essa lista. O leitor de código de barras que traz dígitos extras é tratado
+automaticamente (remove 4 no início e 4 no fim). Em `Configurações` há o status
+da lista e um botão para recarregar. O arquivo de exemplo já acompanha o projeto.
 
 **Painel gerencial** (`/dashboard`) — **somente visualização**
 - Para os usuários com acesso **Gerencial**. Não edita nada: é um monitor.

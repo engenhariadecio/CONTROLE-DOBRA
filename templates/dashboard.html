@@ -138,9 +138,8 @@ function pctTxt(v){ return (v==null) ? '—' : (String(v).replace('.',',')+'%');
 function barPct(v){ return (v==null) ? 0 : Math.max(0, Math.min(100, v)); }
 function corPilar(v){
   if(v==null) return '#94a3b8';
-  if(v>=85) return '#2BA45C';
-  if(v>=60) return '#F59E0B';
-  return '#D6473F';
+  if(v>=85) return '#2BA45C';   // verde Décio
+  return '#1668C0';             // azul Décio
 }
 
 function blocoOee(k){
@@ -179,7 +178,7 @@ function tabelaRank(rows){
 }
 function tagOee(v){
   if(v==null) return '<span class="muted">—</span>';
-  const c = v>=75?'tag-green':(v>=50?'tag-amber':'tag-red');
+  const c = v>=75?'tag-green':'tag-blue';
   return '<span class="tag '+c+'">'+String(v).replace('.',',')+'%</span>';
 }
 function tabelaAtivos(rows){
@@ -213,11 +212,11 @@ function desenharCharts(j){
   if(oeeCtx){
     const v = j.kpis.oee;
     const val = (v==null) ? 0 : Math.max(0, Math.min(100, v));
-    const c = v==null ? '#94a3b8' : (v>=75?'#3ddc84':(v>=50?'#ffc24b':'#ff7a70'));
+    const c = v==null ? '#94a3b8' : (v>=(j.kpis.meta_oee||75) ? '#2BA45C' : '#1668C0');
     charts.oee = new Chart(oeeCtx, {
       type:'doughnut',
       data:{ datasets:[{ data:[val, 100-val],
-        backgroundColor:[c, 'rgba(255,255,255,.16)'], borderWidth:0 }]},
+        backgroundColor:[c, 'rgba(255,255,255,.22)'], borderWidth:0 }]},
       options:{responsive:false, maintainAspectRatio:false, cutout:'76%',
         rotation:-90, circumference:360,
         plugins:{legend:{display:false}, tooltip:{enabled:false}}}

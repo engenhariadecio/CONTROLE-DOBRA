@@ -34,13 +34,6 @@
         <i class="bi bi-cpu-fill"></i><b id="iniMaq">Máquina</b>
       </div>
       <div class="form-row">
-        <div class="field field-full">
-          <label class="label">OP — Ordem de produção * <span class="hint">bipe o código de barras ou digite</span></label>
-          <div class="scan-field">
-            <i class="bi bi-upc-scan"></i>
-            <input class="input" id="iniOp" placeholder="Bipe ou digite a OP…" autocomplete="off" autocapitalize="characters">
-          </div>
-        </div>
         <div class="field">
           <label class="label">Operador *</label>
           <input class="input" id="iniOperador" placeholder="Nome" autocomplete="off">
@@ -49,20 +42,8 @@
           <label class="label">Matrícula</label>
           <input class="input" id="iniMatricula" placeholder="Opcional" autocomplete="off">
         </div>
-        <div class="field">
-          <label class="label">Código / material</label>
-          <input class="input" id="iniCodigo" placeholder="Opcional" autocomplete="off">
-        </div>
-        <div class="field">
-          <label class="label">Qtd prevista</label>
-          <input class="input" id="iniQtd" inputmode="numeric" placeholder="0" autocomplete="off">
-        </div>
-        <div class="field field-full">
-          <label class="label">Descrição</label>
-          <input class="input" id="iniDesc" placeholder="Opcional" autocomplete="off">
-        </div>
       </div>
-      <p class="hint">O cronômetro começa assim que você iniciar. Use PAUSAR nos intervalos.</p>
+      <p class="hint">O cronômetro começa agora. A <b>OP é bipada no final</b>, ao concluir a produção. Use PAUSAR nos intervalos.</p>
     </div>
     <div class="modal-foot">
       <button class="btn btn-ghost" onclick="fechar('mIniciar')">Cancelar</button>
@@ -105,15 +86,15 @@
       <button class="modal-x" onclick="fechar('mPausa')"><i class="bi bi-x"></i></button>
     </div>
     <div class="modal-body">
-      <div class="checks" id="motivosPausa"></div>
-      <div class="field mt">
-        <label class="label">Outro motivo</label>
-        <input class="input" id="pausaOutro" placeholder="Digite se não estiver na lista" autocomplete="off">
+      <div class="motivo-grid" id="motivosPausa"></div>
+      <div id="outroMotivoBox" style="display:none;" class="field mt">
+        <label class="label">Descreva o motivo</label>
+        <input class="input" id="pausaOutro" placeholder="Ex.: manutenção" autocomplete="off">
+        <button class="btn btn-amber mt" id="btnConfirmarOutro"><i class="bi bi-pause-fill"></i>Pausar</button>
       </div>
     </div>
     <div class="modal-foot">
       <button class="btn btn-ghost" onclick="fechar('mPausa')">Cancelar</button>
-      <button class="btn btn-amber" id="btnConfirmarPausa"><i class="bi bi-pause-fill"></i>Pausar</button>
     </div>
   </div>
 </div>
@@ -130,7 +111,27 @@
         <div class="big mono" id="finTempo">00:00:00</div>
         <div class="run-sub">Tempo produtivo (descontadas as pausas)</div>
       </div>
+      <div class="field field-full mt">
+        <label class="label">OP — Ordem de produção * <span class="hint">bipe o código de barras ou digite</span></label>
+        <div class="scan-field">
+          <i class="bi bi-upc-scan"></i>
+          <input class="input" id="finOp" placeholder="Bipe ou digite a OP…" autocomplete="off" autocapitalize="characters">
+        </div>
+        <div id="finOpInfo" class="op-info" style="display:none;"></div>
+      </div>
       <div class="form-row mt">
+        <div class="field">
+          <label class="label">Código / material</label>
+          <input class="input" id="finCodigo" placeholder="Auto pela OP" autocomplete="off">
+        </div>
+        <div class="field">
+          <label class="label">Qtd prevista</label>
+          <input class="input" id="finPrev" inputmode="numeric" placeholder="0" autocomplete="off">
+        </div>
+        <div class="field field-full">
+          <label class="label">Descrição</label>
+          <input class="input" id="finDesc" placeholder="Auto pela OP" autocomplete="off">
+        </div>
         <div class="field">
           <label class="label">Qtd produzida *</label>
           <input class="input" id="finQtd" inputmode="numeric" placeholder="0" autocomplete="off">
@@ -248,17 +249,13 @@ function render(){
 function abrirMaq(id){
   const m = ESTADO.maquinas.find(x=>x.id===id); if(!m) return;
   if(!m.apontamento){
-    // modal iniciar
+    // modal iniciar — só operador; a OP é bipada no final
     document.getElementById('iniMaq').textContent = m.nome + (m.codigo?' · '+m.codigo:'');
-    document.getElementById('iniOp').value='';
     document.getElementById('iniOperador').value='{{ session.get("nome")|e }}';
     document.getElementById('iniMatricula').value='{{ session.get("matricula")|e }}';
-    document.getElementById('iniCodigo').value='';
-    document.getElementById('iniQtd').value='';
-    document.getElementById('iniDesc').value='';
     document.getElementById('btnIniciar').dataset.maq=id;
     abrir('mIniciar');
-    setTimeout(()=>{const c=document.getElementById('iniOp');c.focus();c.select();},150);
+    setTimeout(()=>{const c=document.getElementById('iniOperador');c.focus();c.select();},150);
   }else{
     abrirRun(m);
   }
@@ -296,32 +293,15 @@ function abrirRun(m){
   tick();
 }
 
-// Bipar OP: leitores de código de barras enviam Enter ao final da leitura.
-// Enter na OP → se o operador já está preenchido, inicia direto; senão foca o operador.
-document.getElementById('iniOp').addEventListener('keydown', (ev)=>{
-  if(ev.key!=='Enter') return;
-  ev.preventDefault();
-  const op = ev.target.value.trim();
-  if(!op) return;
-  const oper = document.getElementById('iniOperador').value.trim();
-  if(oper){ document.getElementById('btnIniciar').click(); }
-  else { document.getElementById('iniOperador').focus(); }
-});
-
 document.getElementById('btnIniciar').addEventListener('click', async (e)=>{
   const id = +e.target.dataset.maq;
-  const op = document.getElementById('iniOp').value.trim();
   const operador = document.getElementById('iniOperador').value.trim();
-  if(!op){ toast('Informe a OP','err'); return; }
   if(!operador){ toast('Informe o operador','err'); return; }
   e.target.disabled=true;
   try{
     await api('/api/apontamento/iniciar','POST',{
-      maquina_id:id, op:op, operador_nome:operador,
+      maquina_id:id, operador_nome:operador,
       operador_matricula:document.getElementById('iniMatricula').value.trim(),
-      codigo:document.getElementById('iniCodigo').value.trim(),
-      descricao:document.getElementById('iniDesc').value.trim(),
-      quantidade_prevista:document.getElementById('iniQtd').value.trim(),
     });
     fechar('mIniciar'); toast('Produção iniciada','ok');
     await carregar();
@@ -329,37 +309,39 @@ document.getElementById('btnIniciar').addEventListener('click', async (e)=>{
   finally{ e.target.disabled=false; }
 });
 
-// ── Pausa ──
-let PAUSA_MAQ=null, PAUSA_SEL='';
+// ── Pausa (estilo Banho: grade de botões; escolher o motivo já pausa) ──
+let PAUSA_MAQ=null;
 function abrirPausa(id){
-  PAUSA_MAQ=id; PAUSA_SEL='';
+  PAUSA_MAQ=id;
+  const icones={'Almoço/Janta':'bi-cup-hot','Café':'bi-cup','Laboral':'bi-person-arms-up',
+    'Banheiro':'bi-badge-wc','Manutenção':'bi-tools','Falta de material':'bi-box-seam',
+    'Setup / troca de ferramenta':'bi-wrench-adjustable','Reunião':'bi-people'};
   const box=document.getElementById('motivosPausa');
-  box.innerHTML = ESTADO.motivos.map(mo=>
-    '<label class="check" onclick="selMotivo(this,\''+esc(mo).replace(/'/g,"\\'")+'\')">'
-    +'<i class="bi bi-circle"></i>'+esc(mo)+'</label>').join('');
+  let html = ESTADO.motivos.map(mo=>
+    '<button class="motivo-btn" onclick="enviarPausa(\''+esc(mo).replace(/'/g,"\\'")+'\')">'
+    +'<i class="bi '+(icones[mo]||'bi-pause-circle')+'"></i>'+esc(mo)+'</button>').join('');
+  html += '<button class="motivo-btn" onclick="mostrarOutro()"><i class="bi bi-three-dots"></i>Outros</button>';
+  box.innerHTML = html;
+  document.getElementById('outroMotivoBox').style.display='none';
   document.getElementById('pausaOutro').value='';
   fechar('mRun'); abrir('mPausa');
 }
-function selMotivo(el, mo){
-  document.querySelectorAll('#motivosPausa .check').forEach(c=>{c.classList.remove('on');c.querySelector('i').className='bi bi-circle';});
-  el.classList.add('on'); el.querySelector('i').className='bi bi-check-circle-fill';
-  PAUSA_SEL=mo; document.getElementById('pausaOutro').value='';
+function mostrarOutro(){
+  document.getElementById('outroMotivoBox').style.display='block';
+  setTimeout(()=>document.getElementById('pausaOutro').focus(),100);
 }
-document.getElementById('pausaOutro').addEventListener('input',()=>{
-  document.querySelectorAll('#motivosPausa .check').forEach(c=>{c.classList.remove('on');c.querySelector('i').className='bi bi-circle';});
-  PAUSA_SEL='';
-});
-document.getElementById('btnConfirmarPausa').addEventListener('click', async (e)=>{
-  const outro=document.getElementById('pausaOutro').value.trim();
-  const motivo = outro || PAUSA_SEL;
+async function enviarPausa(motivo){
   if(!motivo){ toast('Escolha um motivo','err'); return; }
-  e.target.disabled=true;
   try{
     await api('/api/apontamento/pausar','POST',{maquina_id:PAUSA_MAQ, motivo:motivo});
     fechar('mPausa'); toast('Pausado: '+motivo,'ok');
     await carregar();
   }catch(err){ toast(err.message,'err'); }
-  finally{ e.target.disabled=false; }
+}
+document.getElementById('btnConfirmarOutro').addEventListener('click', ()=>{
+  const outro=document.getElementById('pausaOutro').value.trim();
+  if(!outro){ toast('Descreva o motivo','err'); return; }
+  enviarPausa(outro);
 });
 
 async function retomar(id){
@@ -374,7 +356,7 @@ async function cancelar(id){
   }catch(e){ toast(e.message,'err'); }
 }
 
-// ── Finalizar ──
+// ── Finalizar (OP bipada no final, puxando dados da lista mestra) ──
 let FINAL_MAQ=null;
 function abrirFinal(id){
   const m=ESTADO.maquinas.find(x=>x.id===id); if(!m||!m.apontamento) return;
@@ -382,19 +364,60 @@ function abrirFinal(id){
   const ap=m.apontamento;
   const {prod} = tempos(ap);
   document.getElementById('finTempo').textContent=hms(prod);
+  document.getElementById('finOp').value = ap.op || '';
+  document.getElementById('finCodigo').value = ap.codigo || '';
+  document.getElementById('finDesc').value = ap.descricao || '';
+  document.getElementById('finPrev').value = ap.quantidade_prevista || '';
   document.getElementById('finQtd').value = ap.quantidade_prevista || '';
   document.getElementById('finRefugo').value='';
   document.getElementById('finObs').value='';
+  document.getElementById('finOpInfo').style.display='none';
   fechar('mRun'); abrir('mFinal');
-  setTimeout(()=>document.getElementById('finQtd').select(),150);
+  setTimeout(()=>{const c=document.getElementById('finOp');c.focus();c.select();},150);
 }
+
+// Consulta a OP na lista mestra e preenche código/descrição/qtd prevista.
+async function consultarOp(){
+  const op=document.getElementById('finOp').value.trim();
+  const info=document.getElementById('finOpInfo');
+  if(!op){ info.style.display='none'; return; }
+  try{
+    const j=await api('/api/buscar_ordem/'+encodeURIComponent(op));
+    if(j.encontrado){
+      document.getElementById('finOp').value = j.ordem;
+      document.getElementById('finCodigo').value = j.material || '';
+      document.getElementById('finDesc').value = j.texto_breve || '';
+      if(j.quantidade){
+        document.getElementById('finPrev').value = j.quantidade;
+        if(!document.getElementById('finQtd').value) document.getElementById('finQtd').value = j.quantidade;
+      }
+      info.className='op-info ok'; info.style.display='block';
+      info.innerHTML='<i class="bi bi-check-circle-fill"></i> '+esc(j.material||'')+' — '+esc(j.texto_breve||'')+(j.quantidade?(' · prev. '+j.quantidade):'');
+      document.getElementById('finQtd').focus();
+    }else{
+      info.className='op-info nf'; info.style.display='block';
+      info.innerHTML='<i class="bi bi-exclamation-triangle-fill"></i> OP não encontrada na lista mestra — você pode preencher manualmente.';
+    }
+  }catch(e){ info.style.display='none'; }
+}
+document.getElementById('finOp').addEventListener('keydown',(ev)=>{
+  if(ev.key==='Enter'){ ev.preventDefault(); consultarOp(); }
+});
+document.getElementById('finOp').addEventListener('blur', consultarOp);
+
 document.getElementById('btnFinalizar').addEventListener('click', async (e)=>{
+  const op=document.getElementById('finOp').value.trim();
   const qtd=document.getElementById('finQtd').value.trim();
+  if(!op){ toast('Bipe ou informe a OP','err'); document.getElementById('finOp').focus(); return; }
   if(qtd===''){ toast('Informe a quantidade produzida','err'); return; }
   e.target.disabled=true;
   try{
     await api('/api/apontamento/finalizar','POST',{
       maquina_id:FINAL_MAQ,
+      op:op,
+      codigo:document.getElementById('finCodigo').value.trim(),
+      descricao:document.getElementById('finDesc').value.trim(),
+      quantidade_prevista:document.getElementById('finPrev').value.trim(),
       quantidade_produzida:qtd,
       refugo:document.getElementById('finRefugo').value.trim(),
       observacao:document.getElementById('finObs').value.trim(),

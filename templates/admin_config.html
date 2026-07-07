@@ -66,6 +66,15 @@
 </div>
 
 <div class="card card-pad mt">
+  <div class="card-title"><i class="bi bi-upc-scan"></i>Lista mestra (OPs do SAP)</div>
+  <p class="hint" style="margin-bottom:12px;">A OP é bipada no final da produção e puxa material, descrição e quantidade desta lista. Coloque o arquivo <b>lista_mestra.xlsx</b> (ou .csv/.txt) na raiz do projeto — mesmo modelo do sistema Banho. Ao publicar no GitHub/Railway, o arquivo já vai junto.</p>
+  <div class="flex" style="align-items:center;gap:14px;flex-wrap:wrap;">
+    <span id="listaStatus" class="tag tag-slate">Verificando…</span>
+    <button class="btn btn-ghost btn-sm" id="btnRecarregarLista"><i class="bi bi-arrow-clockwise"></i>Recarregar lista</button>
+  </div>
+</div>
+
+<div class="card card-pad mt">
   <div class="card-title"><i class="bi bi-hdd-stack-fill"></i>Backup e restauração</div>
   <p class="hint" style="margin-bottom:12px;">Baixe um backup completo da base (usuários, máquinas, configurações, turnos, apontamentos e auditoria) em um único arquivo. Guarde-o em local seguro. A restauração <b>substitui toda a base atual</b> pelo conteúdo do arquivo.</p>
   <div class="flex" style="gap:14px;flex-wrap:wrap;align-items:center;">
@@ -187,5 +196,23 @@ document.getElementById('metaPph').value = META_PPH_PADRAO || '';
 document.getElementById('metaOee').value = META_OEE || '';
 renderTurnos();
 renderSetores(); renderMotivos();
+
+// Lista mestra: status + recarregar
+async function statusLista(){
+  const el=document.getElementById('listaStatus');
+  try{
+    const j=await api('/api/lista_status');
+    if(j.carregada){ el.className='tag tag-green'; el.textContent='Carregada: '+j.total+' OPs ('+(j.arquivo||'')+')'; }
+    else{ el.className='tag tag-amber'; el.textContent=(j.erro||'Não carregada'); }
+  }catch(e){ el.className='tag tag-slate'; el.textContent='Indisponível'; }
+}
+document.getElementById('btnRecarregarLista').addEventListener('click', async(e)=>{
+  e.target.disabled=true;
+  try{ const j=await api('/api/admin/lista/recarregar','POST',{});
+    toast(j.carregada?('Lista recarregada: '+j.total+' OPs'):'Falha ao carregar','ok'); statusLista();
+  }catch(err){ toast(err.message,'err'); }
+  finally{ e.target.disabled=false; }
+});
+statusLista();
 </script>
 {% endblock %}
