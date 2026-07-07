@@ -1478,6 +1478,89 @@ def _seg_hms(seg):
     return f'{h:02d}:{m:02d}:{s:02d}'
 
 
+def _min_local(dt):
+    """Minuto do dia (0..1440) de um datetime UTC, no fuso local."""
+    if not dt:
+        return None
+    loc = dt - timedelta(hours=FUSO_LOCAL_HORAS)
+    return loc.hour * 60 + loc.minute + loc.second / 60.0
+
+
+def _pausa_min(s):
+    """Extrai HH:MM:SS de 'dd/mm HH:MM:SS' -> minutos do dia."""
+    try:
+        hora = str(s).strip().split(' ')[-1]
+        h, m, seg = (hora.split(':') + ['0', '0'])[:3]
+        return int(h) * 60 + int(m) + int(seg) / 60.0
+    except (ValueError, TypeError, IndexError):
+        return None
+
+
+@app.route('/api/dashboard/timeline')
+@perfil_obrigatorio('gerencia', 'admin')
+def api_timeline():
+    """Linha do tempo por máquina para um dia: barras de produção e pausas."""
+    hoje = (datetime.utcnow() - timedelta(hours=FUSO_LOCAL_HORAS)).date()
+    dia = _parse_data(request.args.get('de'), hoje)
+    setor = request.args.get('setor') or setor_do_usuario()
+    turno = (request.args.get('turno') or '').strip()
+    filtro_maq = (request.args.get('maquina') or '').strip()
+    ini_utc, fim_utc = _intervalo_utc(dia, dia)
+    agora = datetime.utcnow()
+    meta_padrao = get_meta_pph_padrao()
+
+    db = Session()
+    try:
+        maquinas = (db.query(Maquina)
+                    .filter(Maquina.setor == setor, Maquina.ativa.is_(True))
+                    .order_by(Maquina.ordem, Maquina.id).all())
+        if filtro_maq:
+            maquinas = [m for m in maquinas if m.nome == filtro_maq]
+
+        aps = (db.query(Apontamento)
+               .filter(Apontamento.setor == setor,
+                       Apontamento.inicio >= ini_utc,
+                       Apontamento.inicio <= fim_utc,
+                       Apontamento.estado.in_(['produzindo', 'pausado', 'finalizado']))
+               .order_by(Apontamento.inicio).all())
+        if turno:
+            aps = [a for a in aps
+                   if turno_de(a.inicio - timedelta(hours=FUSO_LOCAL_HORAS)) == turno]
+
+        por_maq = {}
+        for a in aps:
+            ini_m = _min_local(a.inicio)
+            fim_m = _min_local(a.fim) if a.fim else _min_local(agora)
+            if ini_m is None:
+                continue
+            if fim_m is None or fim_m < ini_m:
+                fim_m = 1440
+            pausas = []
+            for p in a._pausas():
+                pi, pf = _pausa_min(p.get('ini')), _pausa_min(p.get('fim'))
+                if pi is not None and pf is not None and pf >= pi:
+                    pausas.append({'ini': round(pi, 2), 'fim': round(pf, 2),
+                                   'motivo': p.get('motivo', 'Pausa')})
+            o = a.oee(agora, meta_padrao)
+            por_maq.setdefault(a.maquina_nome, []).append({
+                'op': a.op or '—', 'estado': a.estado,
+                'ini': round(ini_m, 2), 'fim': round(min(fim_m, 1440), 2),
+                'inicio_txt': (a.inicio - timedelta(hours=FUSO_LOCAL_HORAS)).strftime('%H:%M') if a.inicio else '',
+                'fim_txt': (a.fim - timedelta(hours=FUSO_LOCAL_HORAS)).strftime('%H:%M') if a.fim else 'agora',
+                'produzida': a.quantidade_produzida or 0,
+                'prod_seg': int(a.producao_seg if a.estado == 'finalizado' else a.produtivo_seg(agora)),
+                'pausa_seg': int(a.pausa_total_seg(agora)),
+                'oee': _pct(o['oee']), 'pausas': pausas,
+            })
+
+        linhas = [{'maquina': m.nome, 'segmentos': por_maq.get(m.nome, [])}
+                  for m in maquinas]
+        return jsonify({'dia': dia.isoformat(), 'setor': setor, 'turno': turno,
+                        'maquinas': [m.nome for m in maquinas], 'linhas': linhas})
+    finally:
+        db.close()
+
+
 @app.route('/api/download/apontamentos')
 @perfil_obrigatorio('gerencia', 'admin')
 def download_apontamentos():

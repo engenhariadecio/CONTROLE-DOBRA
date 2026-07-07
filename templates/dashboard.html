@@ -30,6 +30,10 @@
     <label class="label">Turno</label>
     <select class="input" id="turno"><option value="">Todos os turnos</option></select>
   </div>
+  <div class="filtro-item">
+    <label class="label">Máquina</label>
+    <select class="input" id="maquina"><option value="">Todas as máquinas</option></select>
+  </div>
   <div class="filtro-item grow">
     <label class="label">Períodos rápidos</label>
     <div class="chips-rapidos">
@@ -40,6 +44,11 @@
       <button class="chip" data-p="mes">Este mês</button>
     </div>
   </div>
+</div>
+
+<div class="card card-pad" style="margin-bottom:16px;">
+  <div class="card-title"><i class="bi bi-bar-chart-steps"></i>Linha do tempo — <span id="tlDia">hoje</span></div>
+  <div id="timeline"><div class="center-load"><span class="spin"></span></div></div>
 </div>
 
 <div id="conteudo">
@@ -81,6 +90,7 @@ async function carregar(){
     document.getElementById('setorNome').textContent = j.setor + (j.turno?(' · '+j.turno):'');
     preencherTurnos(j.turnos, turno);
     render(j);
+    carregarTimeline();
   }catch(e){
     box.innerHTML = '<div class="empty"><i class="bi bi-exclamation-circle"></i><p>'+esc(e.message)+'</p></div>';
   }
@@ -92,6 +102,62 @@ function preencherTurnos(lista, atual){
   (lista||[]).forEach(t=>{ const o=document.createElement('option'); o.value=t; o.textContent=t; sel.appendChild(o); });
   if(atual) sel.value=atual;
   sel.dataset.pronto='1';
+}
+
+// ── Linha do tempo (por máquina) ──────────────────────────────────────
+async function carregarTimeline(){
+  const de=document.getElementById('de').value;
+  const setor=document.getElementById('setor').value;
+  const turno=document.getElementById('turno').value;
+  const maquina=document.getElementById('maquina').value;
+  const box=document.getElementById('timeline');
+  document.getElementById('tlDia').textContent = de || 'hoje';
+  const q=`?de=${de}&setor=${encodeURIComponent(setor)}&turno=${encodeURIComponent(turno)}&maquina=${encodeURIComponent(maquina)}`;
+  try{
+    const j=await api('/api/dashboard/timeline'+q);
+    // popular filtro de máquina (uma vez)
+    const selM=document.getElementById('maquina');
+    if(!selM.dataset.pronto){
+      (j.maquinas||[]).forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;selM.appendChild(o);});
+      selM.dataset.pronto='1';
+    }
+    box.innerHTML = renderTimeline(j);
+  }catch(e){
+    box.innerHTML='<div class="empty"><i class="bi bi-exclamation-circle"></i><p>'+esc(e.message)+'</p></div>';
+  }
+}
+
+function renderTimeline(j){
+  const linhas=j.linhas||[];
+  if(!linhas.length) return '<div class="empty"><i class="bi bi-inbox"></i><p>Nenhuma máquina no setor.</p></div>';
+  // régua de horas (0,3,6,...,24)
+  let ruler='<div class="tl-ruler"><div class="tl-rlabel"></div><div class="tl-rtrack">';
+  for(let h=0;h<=24;h+=3){ ruler+='<span class="tl-htick" style="left:'+(h/24*100)+'%">'+String(h).padStart(2,'0')+'h</span>'; }
+  ruler+='</div></div>';
+
+  const linhasHtml = linhas.map(l=>{
+    const barras = (l.segmentos||[]).map(s=>{
+      const left=s.ini/1440*100, w=Math.max(0.6,(s.fim-s.ini)/1440*100);
+      const cls = s.estado==='finalizado' ? 'prod' : (s.estado==='pausado'?'pausa':'ativo');
+      const tip = 'OP '+s.op+' · '+s.inicio_txt+'–'+s.fim_txt+' · '+fmt(s.produzida)+' pç'
+        + (s.oee!=null?(' · OEE '+String(s.oee).replace('.',',')+'%'):'');
+      // pausas dentro da barra (posição relativa à barra)
+      const paus = (s.pausas||[]).map(p=>{
+        const span=(s.fim-s.ini)||1;
+        const pl=Math.max(0,(p.ini-s.ini)/span*100), pw=Math.max(1.2,(p.fim-p.ini)/span*100);
+        return '<span class="tl-pausa" style="left:'+pl+'%;width:'+pw+'%" title="Pausa: '+esc(p.motivo)+'"></span>';
+      }).join('');
+      return '<div class="tl-bar '+cls+'" style="left:'+left+'%;width:'+w+'%" title="'+esc(tip)+'"><span class="tl-bar-op">'+esc(s.op)+'</span>'+paus+'</div>';
+    }).join('');
+    return '<div class="tl-row"><div class="tl-rlabel">'+esc(l.maquina)+'</div>'
+      +'<div class="tl-rtrack">'+barras+'</div></div>';
+  }).join('');
+
+  const legenda='<div class="tl-legenda">'
+    +'<span><i class="dot prod"></i>Produção</span>'
+    +'<span><i class="dot ativo"></i>Em andamento</span>'
+    +'<span><i class="dot pausa"></i>Pausa</span></div>';
+  return ruler + linhasHtml + legenda;
 }
 
 function render(j){
@@ -274,6 +340,7 @@ document.getElementById('de').addEventListener('change', carregar);
 document.getElementById('ate').addEventListener('change', carregar);
 document.getElementById('setor').addEventListener('change', carregar);
 document.getElementById('turno').addEventListener('change', carregar);
+document.getElementById('maquina').addEventListener('change', carregarTimeline);
 document.getElementById('btnAtualizar').addEventListener('click', carregar);
 
 setPeriodo('hoje');
