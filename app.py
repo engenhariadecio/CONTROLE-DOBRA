@@ -705,6 +705,24 @@ def setor_do_usuario():
     return (session.get('setor') or '').strip() or get_setor_ativo()
 
 
+def _pode_ver_todos_setores():
+    """Só admin ou usuário sem setor fixo pode ver 'Todos os setores'."""
+    acessos = session.get('perfis') or [session.get('perfil')]
+    return ('admin' in acessos) or not (session.get('setor') or '').strip()
+
+
+def resolver_setor(arg):
+    """Resolve o filtro de setor. Retorna (setor_ou_None, rotulo).
+    setor None = todos os setores (só permitido a admin/geral)."""
+    arg = (arg or '').strip()
+    if arg == '__todos__':
+        if _pode_ver_todos_setores():
+            return None, 'Todos os setores'
+        return setor_do_usuario(), setor_do_usuario()
+    setor = arg or setor_do_usuario()
+    return setor, setor
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Rotas de sessão
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1147,7 +1165,7 @@ def api_dashboard():
     hoje = (datetime.utcnow() - timedelta(hours=FUSO_LOCAL_HORAS)).date()
     di = _parse_data(request.args.get('de'), hoje)
     df = _parse_data(request.args.get('ate'), hoje)
-    setor = request.args.get('setor') or setor_do_usuario()
+    setor, setor_rotulo = resolver_setor(request.args.get('setor'))
     turno = (request.args.get('turno') or '').strip()
     filtro_maq = (request.args.get('maquina') or '').strip()
     ini_utc, fim_utc = _intervalo_utc(di, df)
@@ -1156,10 +1174,11 @@ def api_dashboard():
     try:
         q = (db.query(Apontamento)
              .filter(Apontamento.estado == 'finalizado',
-                     Apontamento.setor == setor,
                      Apontamento.inicio >= ini_utc,
                      Apontamento.inicio <= fim_utc)
              .order_by(Apontamento.fim.desc()))
+        if setor:
+            q = q.filter(Apontamento.setor == setor)
         finalizados = q.all()
         if turno:
             finalizados = [a for a in finalizados
@@ -1168,17 +1187,19 @@ def api_dashboard():
             finalizados = [a for a in finalizados if a.maquina_nome == filtro_maq]
 
         # Em andamento (agora)
-        em_andamento = (db.query(Apontamento)
-                        .filter(Apontamento.setor == setor,
-                                Apontamento.estado.in_(['produzindo', 'pausado']))
-                        .all())
+        qa = (db.query(Apontamento)
+              .filter(Apontamento.estado.in_(['produzindo', 'pausado'])))
+        if setor:
+            qa = qa.filter(Apontamento.setor == setor)
+        em_andamento = qa.all()
         if filtro_maq:
             em_andamento = [a for a in em_andamento if a.maquina_nome == filtro_maq]
 
-        # Máquinas do setor (para o filtro de máquina no painel)
-        maquinas_setor = [m.nome for m in db.query(Maquina)
-                          .filter(Maquina.setor == setor, Maquina.ativa.is_(True))
-                          .order_by(Maquina.ordem, Maquina.id).all()]
+        # Máquinas (para o filtro de máquina no painel)
+        qm = db.query(Maquina).filter(Maquina.ativa.is_(True))
+        if setor:
+            qm = qm.filter(Maquina.setor == setor)
+        maquinas_setor = [m.nome for m in qm.order_by(Maquina.setor, Maquina.ordem, Maquina.id).all()]
 
         meta_padrao = get_meta_pph_padrao()
         meta_oee = get_meta_oee()
@@ -1278,7 +1299,7 @@ def api_dashboard():
 
         agora = datetime.utcnow()
         return jsonify({
-            'setor': setor, 'de': di.isoformat(), 'ate': df.isoformat(),
+            'setor': setor_rotulo, 'de': di.isoformat(), 'ate': df.isoformat(),
             'turno': turno, 'turnos': [t['nome'] for t in get_turnos()],
             'maquina': filtro_maq, 'maquinas': maquinas_setor,
             'kpis': {
@@ -1495,19 +1516,21 @@ def download_apontamentos():
     hoje = (datetime.utcnow() - timedelta(hours=FUSO_LOCAL_HORAS)).date()
     di = _parse_data(request.args.get('de'), hoje)
     df = _parse_data(request.args.get('ate'), hoje)
-    setor = request.args.get('setor') or setor_do_usuario()
+    setor, setor_rotulo = resolver_setor(request.args.get('setor'))
     turno = (request.args.get('turno') or '').strip()
     filtro_maq = (request.args.get('maquina') or '').strip()
     ini_utc, fim_utc = _intervalo_utc(di, df)
 
     db = Session()
     try:
-        aps = (db.query(Apontamento)
-               .filter(Apontamento.estado == 'finalizado',
-                       Apontamento.setor == setor,
-                       Apontamento.inicio >= ini_utc,
-                       Apontamento.inicio <= fim_utc)
-               .order_by(Apontamento.inicio).all())
+        q = (db.query(Apontamento)
+             .filter(Apontamento.estado == 'finalizado',
+                     Apontamento.inicio >= ini_utc,
+                     Apontamento.inicio <= fim_utc)
+             .order_by(Apontamento.inicio))
+        if setor:
+            q = q.filter(Apontamento.setor == setor)
+        aps = q.all()
         if turno:
             aps = [a for a in aps
                    if turno_de(a.inicio - timedelta(hours=FUSO_LOCAL_HORAS)) == turno]
@@ -1517,7 +1540,7 @@ def download_apontamentos():
         ws = wb.active
         ws.title = 'Apontamentos'
         meta_padrao = get_meta_pph_padrao()
-        cols = ['Data', 'Turno', 'Máquina', 'Operador', 'Matrícula', 'OP', 'Código',
+        cols = ['Data', 'Turno', 'Setor', 'Máquina', 'Operador', 'Matrícula', 'OP', 'Código',
                 'Descrição', 'Qtd prevista', 'Qtd produzida', 'Refugo',
                 'Início', 'Fim', 'Tempo produtivo', 'Pausa total',
                 'Nº pausas', 'Meta pç/h', 'Peças/hora',
@@ -1543,6 +1566,7 @@ def download_apontamentos():
             ws.append([
                 dloc.strftime('%d/%m/%Y') if dloc else '',
                 turno_de(dloc) if dloc else '',
+                a.setor or '',
                 a.maquina_nome, a.operador_nome, a.operador_matricula or '',
                 a.op or '', a.codigo or '', a.descricao or '',
                 a.quantidade_prevista or 0, a.quantidade_produzida or 0, a.refugo or 0,
@@ -1554,7 +1578,7 @@ def download_apontamentos():
                 _pex(_pct(o['qualidade'])), _pex(_pct(o['oee'])),
                 a.observacao or '',
             ])
-        larguras = [12, 10, 16, 20, 12, 12, 14, 30, 12, 13, 10, 10, 10, 15, 13,
+        larguras = [12, 10, 14, 16, 20, 12, 12, 14, 30, 12, 13, 10, 10, 10, 15, 13,
                     10, 10, 11, 16, 15, 14, 10, 30]
         for i, w in enumerate(larguras, 1):
             ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
@@ -1562,7 +1586,8 @@ def download_apontamentos():
         bio = io.BytesIO()
         wb.save(bio)
         bio.seek(0)
-        nome = f'apontamentos_{setor}_{di.isoformat()}_a_{df.isoformat()}.xlsx'
+        _sl = (setor or 'todos_setores').replace('/', '-').replace(' ', '_')
+        nome = f'apontamentos_{_sl}_{di.isoformat()}_a_{df.isoformat()}.xlsx'
         return send_file(bio, as_attachment=True, download_name=nome,
                          mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     finally:
