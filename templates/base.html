@@ -32,6 +32,7 @@
     {% endif %}
     {% if eh_admin %}
     <a href="{{ url_for('admin_maquinas') }}" class="tb-btn {% if request.endpoint=='admin_maquinas' %}ativo{% endif %}" title="Máquinas"><i class="bi bi-cpu-fill"></i></a>
+    <a href="{{ url_for('admin_metas') }}" class="tb-btn {% if request.endpoint=='admin_metas' %}ativo{% endif %}" title="Metas por peça"><i class="bi bi-speedometer2"></i></a>
     <a href="{{ url_for('admin_usuarios') }}" class="tb-btn {% if request.endpoint=='admin_usuarios' %}ativo{% endif %}" title="Usuários"><i class="bi bi-people-fill"></i></a>
     <a href="{{ url_for('admin_apontamentos') }}" class="tb-btn {% if request.endpoint=='admin_apontamentos' %}ativo{% endif %}" title="Apontamentos"><i class="bi bi-card-checklist"></i></a>
     <a href="{{ url_for('admin_config') }}" class="tb-btn {% if request.endpoint=='admin_config' %}ativo{% endif %}" title="Configurações"><i class="bi bi-gear-fill"></i></a>

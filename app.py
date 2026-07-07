@@ -406,6 +406,23 @@ class Config(Base):
     valor = Column(Text, default='')
 
 
+class MetaPeca(Base):
+    """Meta de peças/hora por PEÇA (código/material). Tem prioridade sobre a
+    meta da máquina no cálculo do Desempenho/OEE."""
+    __tablename__ = 'metas_peca'
+    id = Column(Integer, primary_key=True)
+    codigo = Column(String(60), unique=True, index=True)   # material / código SAP
+    descricao = Column(String(200), default='')
+    setor = Column(String(40), default='')                 # opcional (informativo)
+    pph = Column(Float, default=0)                          # meta peças/hora da peça
+    criado_em = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {'id': self.id, 'codigo': self.codigo or '',
+                'descricao': self.descricao or '', 'setor': self.setor or '',
+                'pph': round(self.pph or 0, 2)}
+
+
 class ApontamentoLog(Base):
     """Auditoria de alterações/exclusões feitas pelo admin."""
     __tablename__ = 'apontamento_logs'
@@ -872,6 +889,18 @@ def admin_apontamentos():
                            setor_ativo=get_setor_ativo())
 
 
+@app.route('/admin/metas')
+@perfil_obrigatorio('admin')
+def admin_metas():
+    db = Session()
+    try:
+        metas = [m.to_dict() for m in db.query(MetaPeca).order_by(MetaPeca.codigo).all()]
+    finally:
+        db.close()
+    return render_template('admin_metas.html', metas=metas, setores=get_setores(),
+                           meta_pph_padrao=get_meta_pph_padrao())
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # API — utilidades
 # ─────────────────────────────────────────────────────────────────────────────
@@ -994,9 +1023,15 @@ def api_iniciar():
         if aberto:
             return jsonify({'ok': False, 'erro': 'Já existe apontamento em andamento nesta máquina.'}), 409
 
-        # Meta de peças/hora vigente: informada na abertura, senão a da máquina,
-        # senão o padrão global. Congelada no apontamento para relatórios estáveis.
-        meta_pph = _float(d.get('meta_pph'), 0) or float(m.meta_pph or 0) or get_meta_pph_padrao()
+        # Meta de peças/hora vigente. Prioridade: PEÇA (código) > máquina > padrão.
+        codigo_op = (d.get('codigo') or '').strip()
+        meta_peca = 0.0
+        if codigo_op:
+            mp = db.query(MetaPeca).filter_by(codigo=codigo_op).first()
+            if mp:
+                meta_peca = float(mp.pph or 0)
+        meta_pph = (_float(d.get('meta_pph'), 0) or meta_peca
+                    or float(m.meta_pph or 0) or get_meta_pph_padrao())
         ap = Apontamento(
             estado='produzindo', maquina_id=m.id, maquina_nome=m.nome, setor=m.setor,
             operador_nome=operador,
@@ -1384,6 +1419,58 @@ def api_maquina_excluir():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# API — Admin: metas de peças/hora por PEÇA (código/material)
+# ─────────────────────────────────────────────────────────────────────────────
+@app.route('/api/admin/meta/salvar', methods=['POST'])
+@perfil_obrigatorio('admin')
+def api_meta_salvar():
+    d = request.get_json(force=True, silent=True) or {}
+    codigo = (d.get('codigo') or '').strip()
+    if not codigo:
+        return jsonify({'ok': False, 'erro': 'Informe o código/material da peça.'}), 400
+    db = Session()
+    try:
+        mid = _int(d.get('id'), 0)
+        if mid:
+            mp = db.query(MetaPeca).filter_by(id=mid).first()
+            if not mp:
+                return jsonify({'ok': False, 'erro': 'Meta não encontrada.'}), 404
+        else:
+            mp = db.query(MetaPeca).filter_by(codigo=codigo).first() or MetaPeca()
+            if not mp.id:
+                db.add(mp)
+        # não permite dois registros com o mesmo código
+        dup = db.query(MetaPeca).filter(MetaPeca.codigo == codigo, MetaPeca.id != (mp.id or 0)).first()
+        if dup:
+            return jsonify({'ok': False, 'erro': 'Já existe meta para esse código.'}), 409
+        mp.codigo = codigo
+        mp.descricao = (d.get('descricao') or '').strip()
+        mp.setor = (d.get('setor') or '').strip()
+        mp.pph = max(0.0, _float(d.get('pph'), 0))
+        db.commit()
+        return jsonify({'ok': True, 'meta': mp.to_dict()})
+    finally:
+        db.close()
+
+
+@app.route('/api/admin/meta/excluir', methods=['POST'])
+@perfil_obrigatorio('admin')
+def api_meta_excluir():
+    d = request.get_json(force=True, silent=True) or {}
+    mid = _int(d.get('id'), 0)
+    db = Session()
+    try:
+        mp = db.query(MetaPeca).filter_by(id=mid).first()
+        if not mp:
+            return jsonify({'ok': False, 'erro': 'Meta não encontrada.'}), 404
+        db.delete(mp)
+        db.commit()
+        return jsonify({'ok': True})
+    finally:
+        db.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # API — Admin: usuários
 # ─────────────────────────────────────────────────────────────────────────────
 PERFIS_VALIDOS = ['operador', 'gerencia', 'admin']
@@ -1706,6 +1793,7 @@ _BACKUP_MODELOS = [
     ('config', Config),
     ('usuarios', Usuario),
     ('maquinas', Maquina),
+    ('metas_peca', MetaPeca),
     ('apontamentos', Apontamento),
     ('logs', ApontamentoLog),
 ]

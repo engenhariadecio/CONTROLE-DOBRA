@@ -159,12 +159,17 @@ Desempenho      = peças produzidas ÷ (meta pç/h × horas produtivas)   [limit
 Qualidade       = (produzidas − refugo) ÷ produzidas
 ```
 
-A **meta de peças/hora** vem da máquina (tela de Máquinas); se a máquina não
-tiver meta, usa-se a **meta padrão** de Configurações. A meta em vigor é
-congelada em cada apontamento no momento do início, para que relatórios
-antigos não mudem quando você reajustar a meta. Sem nenhuma meta cadastrada,
-Disponibilidade e Qualidade continuam sendo calculadas, mas Desempenho e OEE
-aparecem como "—" até você definir a meta.
+A **meta de peças/hora** é resolvida por prioridade, do mais específico ao mais
+geral: **peça (código/material) → máquina → padrão global**. Ou seja, a meta da
+peça vale primeiro (cada peça tem seu tempo); se a peça não tiver meta, usa-se a
+meta da máquina; se a máquina não tiver, o padrão global de Configurações.
+- Metas por peça: **Admin → Metas por peça** (`/admin/metas`).
+- Meta por máquina: **Admin → Máquinas**.
+- Padrão global: **Admin → Configurações**.
+
+A meta em vigor é congelada em cada apontamento no início, para relatórios
+estáveis. Sem nenhuma meta, Disponibilidade e Qualidade continuam sendo
+calculadas, mas Desempenho e OEE aparecem como "—" até você definir a meta.
 
 ## Estrutura
 

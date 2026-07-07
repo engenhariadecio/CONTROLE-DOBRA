@@ -1,0 +1,162 @@
+{% extends 'base.html' %}
+{% block title %}Metas por peça{% endblock %}
+{% block content %}
+<div class="section-head">
+  <div>
+    <div class="section-title"><i class="bi bi-speedometer2"></i>Metas por peça (peças/hora)</div>
+    <div class="section-sub">A meta da peça tem prioridade no OEE: <b>peça &gt; máquina &gt; padrão global</b></div>
+  </div>
+  <button class="btn btn-primary" onclick="novaMeta()"><i class="bi bi-plus-lg"></i>Nova meta</button>
+</div>
+
+<div class="alert alert-info" style="margin-bottom:14px;">
+  <i class="bi bi-info-circle-fill"></i>
+  <span>Cadastre a meta de peças/hora de cada peça (código/material). Ao iniciar uma OP, o sistema usa a meta da peça; se não houver, usa a da máquina; se não houver, o padrão global (<b>{{ meta_pph_padrao or 0 }}</b> pç/h).</span>
+</div>
+
+<div class="toolbar">
+  <input class="input" id="busca" placeholder="Buscar por código ou descrição…" oninput="render()">
+</div>
+
+<div class="tabela-wrap">
+  <table class="tbl">
+    <thead><tr><th>Código / material</th><th>Descrição</th><th>Setor</th><th class="right">Meta pç/h</th><th class="right">Ações</th></tr></thead>
+    <tbody id="corpo"></tbody>
+  </table>
+</div>
+
+<!-- Modal -->
+<div class="modal-bg" id="mMeta">
+  <div class="modal">
+    <div class="modal-head">
+      <h3><i class="bi bi-speedometer2"></i><span id="tituloMeta">Nova meta</span></h3>
+      <button class="modal-x" onclick="fechar('mMeta')"><i class="bi bi-x"></i></button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="pId">
+      <div class="field field-full">
+        <label class="label">Código / material * <span class="hint">bipe a OP ou digite o código</span></label>
+        <div class="scan-field">
+          <i class="bi bi-upc-scan"></i>
+          <input class="input" id="pCodigo" placeholder="Bipe a OP ou digite o código…" autocomplete="off">
+        </div>
+        <div id="pInfo" class="op-info" style="display:none;"></div>
+      </div>
+      <div class="form-row mt">
+        <div class="field field-full">
+          <label class="label">Descrição da peça</label>
+          <input class="input" id="pDesc" placeholder="Opcional" autocomplete="off">
+        </div>
+        <div class="field">
+          <label class="label">Setor <span class="hint">(informativo)</span></label>
+          <select class="input" id="pSetor">
+            <option value="">—</option>
+            {% for s in setores %}<option>{{ s }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label class="label">Meta de peças/hora *</label>
+          <input class="input" id="pPph" inputmode="decimal" placeholder="Ex.: 45">
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="fechar('mMeta')">Cancelar</button>
+      <button class="btn btn-primary" id="btnSalvarMeta"><i class="bi bi-check-lg"></i>Salvar</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let METAS = {{ metas | tojson }};
+function abrir(id){document.getElementById(id).classList.add('show');}
+function fechar(id){document.getElementById(id).classList.remove('show');}
+
+function render(){
+  const q=(document.getElementById('busca').value||'').toLowerCase();
+  const rows=METAS.filter(m=>!q || (m.codigo||'').toLowerCase().includes(q) || (m.descricao||'').toLowerCase().includes(q));
+  const corpo=document.getElementById('corpo');
+  if(!rows.length){ corpo.innerHTML='<tr><td colspan="5"><div class="empty"><i class="bi bi-speedometer2"></i><p>Nenhuma meta por peça cadastrada.</p></div></td></tr>'; return; }
+  corpo.innerHTML=rows.map(m=>
+    '<tr><td><b>'+esc(m.codigo)+'</b></td><td>'+(m.descricao?esc(m.descricao):'—')+'</td>'
+    +'<td>'+(m.setor?'<span class="tag tag-blue">'+esc(m.setor)+'</span>':'—')+'</td>'
+    +'<td class="right"><b>'+m.pph+'</b> <span class="muted">pç/h</span></td>'
+    +'<td class="right nowrap"><button class="btn btn-ghost btn-sm" onclick="editar('+m.id+')"><i class="bi bi-pencil"></i></button> '
+    +'<button class="btn btn-ghost btn-sm" onclick="excluir('+m.id+',\''+esc(m.codigo).replace(/\'/g,"")+'\')"><i class="bi bi-trash"></i></button></td></tr>'
+  ).join('');
+}
+
+function novaMeta(){
+  document.getElementById('tituloMeta').textContent='Nova meta';
+  document.getElementById('pId').value='';
+  ['pCodigo','pDesc','pPph'].forEach(i=>document.getElementById(i).value='');
+  document.getElementById('pSetor').value='';
+  document.getElementById('pInfo').style.display='none';
+  abrir('mMeta'); setTimeout(()=>document.getElementById('pCodigo').focus(),150);
+}
+function editar(id){
+  const m=METAS.find(x=>x.id===id); if(!m) return;
+  document.getElementById('tituloMeta').textContent='Editar meta';
+  document.getElementById('pId').value=m.id;
+  document.getElementById('pCodigo').value=m.codigo;
+  document.getElementById('pDesc').value=m.descricao||'';
+  document.getElementById('pSetor').value=m.setor||'';
+  document.getElementById('pPph').value=m.pph||'';
+  document.getElementById('pInfo').style.display='none';
+  abrir('mMeta');
+}
+
+// Bipar OP/código: puxa código e descrição da lista mestra
+async function consultarCod(){
+  const v=document.getElementById('pCodigo').value.trim();
+  const info=document.getElementById('pInfo');
+  if(!v){ info.style.display='none'; return; }
+  try{
+    const j=await api('/api/buscar_ordem/'+encodeURIComponent(v));
+    if(j.encontrado){
+      document.getElementById('pCodigo').value=j.material||v;
+      if(!document.getElementById('pDesc').value) document.getElementById('pDesc').value=j.texto_breve||'';
+      info.className='op-info ok'; info.style.display='block';
+      info.innerHTML='<i class="bi bi-check-circle-fill"></i> '+esc(j.material||'')+' — '+esc(j.texto_breve||'');
+      document.getElementById('pPph').focus();
+    }else{ info.style.display='none'; }
+  }catch(e){ info.style.display='none'; }
+}
+document.getElementById('pCodigo').addEventListener('keydown',ev=>{ if(ev.key==='Enter'){ev.preventDefault(); consultarCod();} });
+document.getElementById('pCodigo').addEventListener('blur', consultarCod);
+
+document.getElementById('btnSalvarMeta').addEventListener('click', async(e)=>{
+  const codigo=document.getElementById('pCodigo').value.trim();
+  const pph=document.getElementById('pPph').value.trim();
+  if(!codigo){ toast('Informe o código/material','err'); return; }
+  if(pph===''){ toast('Informe a meta de peças/hora','err'); return; }
+  e.target.disabled=true;
+  try{
+    const j=await api('/api/admin/meta/salvar','POST',{
+      id:document.getElementById('pId').value||0,
+      codigo:codigo,
+      descricao:document.getElementById('pDesc').value.trim(),
+      setor:document.getElementById('pSetor').value,
+      pph:pph,
+    });
+    const i=METAS.findIndex(x=>x.id===j.meta.id);
+    if(i>=0) METAS[i]=j.meta; else METAS.push(j.meta);
+    METAS.sort((a,b)=>(a.codigo||'').localeCompare(b.codigo||''));
+    fechar('mMeta'); render(); toast('Meta salva','ok');
+  }catch(err){ toast(err.message,'err'); }
+  finally{ e.target.disabled=false; }
+});
+
+async function excluir(id, codigo){
+  if(!confirm('Excluir a meta da peça "'+codigo+'"?')) return;
+  try{ await api('/api/admin/meta/excluir','POST',{id:id});
+    METAS=METAS.filter(x=>x.id!==id); render(); toast('Meta excluída','ok');
+  }catch(e){ toast(e.message,'err'); }
+}
+
+document.querySelectorAll('.modal-bg').forEach(bg=>bg.addEventListener('click',ev=>{if(ev.target===bg)bg.classList.remove('show');}));
+render();
+</script>
+{% endblock %}

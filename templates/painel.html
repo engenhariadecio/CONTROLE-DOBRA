@@ -54,13 +54,9 @@
           <label class="label">Descrição da peça</label>
           <input class="input" id="iniDesc" placeholder="Auto pela OP" autocomplete="off">
         </div>
-        <div class="field">
+        <div class="field field-full">
           <label class="label">Operador *</label>
           <input class="input" id="iniOperador" placeholder="Nome" autocomplete="off">
-        </div>
-        <div class="field">
-          <label class="label">Matrícula</label>
-          <input class="input" id="iniMatricula" placeholder="Opcional" autocomplete="off">
         </div>
       </div>
       <p class="hint">Cadastre a OP e inicie: o cronômetro começa agora e o gerencial já mostra a peça em produção. Use PAUSAR nos intervalos.</p>
@@ -258,7 +254,6 @@ function abrirMaq(id){
     document.getElementById('iniDesc').value='';
     document.getElementById('iniOpInfo').style.display='none';
     document.getElementById('iniOperador').value='{{ session.get("nome")|e }}';
-    document.getElementById('iniMatricula').value='{{ session.get("matricula")|e }}';
     document.getElementById('btnIniciar').dataset.maq=id;
     abrir('mIniciar');
     setTimeout(()=>{const c=document.getElementById('iniOp');c.focus();c.select();},150);
@@ -333,7 +328,6 @@ document.getElementById('btnIniciar').addEventListener('click', async (e)=>{
   try{
     await api('/api/apontamento/iniciar','POST',{
       maquina_id:id, op:op, operador_nome:operador,
-      operador_matricula:document.getElementById('iniMatricula').value.trim(),
       codigo:document.getElementById('iniCodigo').value.trim(),
       descricao:document.getElementById('iniDesc').value.trim(),
       quantidade_prevista:document.getElementById('iniPrev').value.trim(),
