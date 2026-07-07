@@ -65,6 +65,18 @@
   <button class="btn btn-primary btn-lg" id="btnSalvar"><i class="bi bi-check-lg"></i>Salvar configurações</button>
 </div>
 
+<div class="card card-pad mt">
+  <div class="card-title"><i class="bi bi-hdd-stack-fill"></i>Backup e restauração</div>
+  <p class="hint" style="margin-bottom:12px;">Baixe um backup completo da base (usuários, máquinas, configurações, turnos, apontamentos e auditoria) em um único arquivo. Guarde-o em local seguro. A restauração <b>substitui toda a base atual</b> pelo conteúdo do arquivo.</p>
+  <div class="flex" style="gap:14px;flex-wrap:wrap;align-items:center;">
+    <a class="btn btn-primary" href="/api/admin/backup"><i class="bi bi-download"></i>Baixar backup (.json)</a>
+    <span class="muted">|</span>
+    <input type="file" id="fileRestore" accept="application/json,.json" class="input" style="max-width:280px;padding:8px;">
+    <button class="btn btn-amber" id="btnRestore"><i class="bi bi-upload"></i>Restaurar backup</button>
+  </div>
+  <p class="hint" style="margin-top:10px;">Dica: faça um backup antes de qualquer restauração. No Railway, o backup é a forma de levar a base de um ambiente para outro.</p>
+</div>
+
 <div class="card card-pad mt" style="border-color:var(--red-soft);">
   <div class="card-title" style="color:var(--red);"><i class="bi bi-exclamation-triangle-fill"></i>Zona de perigo</div>
   <p class="hint" style="margin-bottom:12px;">Apaga TODOS os apontamentos (histórico de produção). Máquinas e usuários permanecem. Não pode ser desfeito.</p>
@@ -138,6 +150,23 @@ document.getElementById('btnSalvar').addEventListener('click', async(e)=>{
     document.getElementById('metaOee').value = j.meta_oee||'';
     renderSetores(); renderMotivos();
     toast('Configurações salvas','ok');
+  }catch(err){ toast(err.message,'err'); }
+  finally{ e.target.disabled=false; }
+});
+
+document.getElementById('btnRestore').addEventListener('click', async(e)=>{
+  const f=document.getElementById('fileRestore').files[0];
+  if(!f){ toast('Escolha o arquivo de backup','err'); return; }
+  if(!confirm('Restaurar este backup vai SUBSTITUIR toda a base atual (usuários, máquinas, apontamentos). Deseja continuar?')) return;
+  e.target.disabled=true;
+  try{
+    const fd=new FormData(); fd.append('arquivo', f);
+    const r=await fetch('/api/admin/restore',{method:'POST',body:fd});
+    const j=await r.json();
+    if(!j.ok) throw new Error(j.erro||'Falha ao restaurar');
+    const c=j.contagem||{};
+    toast('Base restaurada: '+(c.usuarios||0)+' usuários, '+(c.maquinas||0)+' máquinas, '+(c.apontamentos||0)+' apontamentos','ok');
+    setTimeout(()=>location.reload(), 1200);
   }catch(err){ toast(err.message,'err'); }
   finally{ e.target.disabled=false; }
 });

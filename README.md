@@ -53,6 +53,22 @@ sem misturar os dados.
   registrada na auditoria. (A edição fica aqui, no admin — o painel gerencial é
   só visualização.)
 
+**Vários administradores.** Basta dar o acesso **Administração** a mais de um
+usuário. Todos podem editar a base (máquinas, usuários, configurações, turnos)
+e os dados (apontamentos).
+
+**Backup e restauração** (em `/admin/config`)
+- **Baixar backup** gera um único arquivo `.json` com a base completa: usuários
+  (com senha), máquinas, configurações, turnos, apontamentos e auditoria.
+- **Restaurar backup** substitui toda a base atual pelo conteúdo do arquivo
+  (pede confirmação). É também a forma de migrar a base entre ambientes.
+- Recomendação: baixe um backup com regularidade e sempre antes de restaurar.
+
+**Setores e máquinas de exemplo.** Numa base nova, o sistema já vem com um
+parque de exemplo cobrindo os cinco setores — Corte (puncionadeiras, laser),
+Estamparia (furadeira, prensas), Dobra (dobradeiras), Solda (solda ponto,
+solda) e Acabamento (polimento, acabamento). Ajuste/adicione tudo em Máquinas.
+
 ---
 
 ## Acessos padrão (troque depois!)

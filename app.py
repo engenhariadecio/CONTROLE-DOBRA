@@ -463,10 +463,36 @@ def bootstrap():
                 perfil='operador', perfis='operador', setor='Dobra', ativo=True))
         # Máquinas de exemplo (Dobra)
         if db.query(Maquina).count() == 0:
-            for i in range(1, 7):
-                db.add(Maquina(nome=f'Dobradeira {i:02d}', codigo=f'DOB-{i:02d}',
-                               setor='Dobra', ativa=True, ordem=i, meta_pph=60))
-            print('[bootstrap] 6 dobradeiras de exemplo criadas')
+            # Parque de máquinas de exemplo, cobrindo todos os setores da fábrica.
+            # (código, nome, setor, meta peças/hora de referência)
+            exemplos = [
+                # Corte
+                ('COR-PUN-01', 'Puncionadeira 01', 'Corte', 40),
+                ('COR-PUN-02', 'Puncionadeira 02', 'Corte', 40),
+                ('COR-LAS-01', 'Laser 01', 'Corte', 55),
+                ('COR-LAS-02', 'Laser 02', 'Corte', 55),
+                # Estamparia
+                ('EST-FUR-01', 'Furadeira 01', 'Estamparia', 90),
+                ('EST-PRE-01', 'Prensa 01', 'Estamparia', 120),
+                ('EST-PRE-02', 'Prensa 02', 'Estamparia', 120),
+                # Dobra
+                ('DOB-01', 'Dobradeira 01', 'Dobra', 60),
+                ('DOB-02', 'Dobradeira 02', 'Dobra', 60),
+                ('DOB-03', 'Dobradeira 03', 'Dobra', 60),
+                ('DOB-04', 'Dobradeira 04', 'Dobra', 60),
+                # Solda
+                ('SOL-PON-01', 'Solda Ponto 01', 'Solda', 75),
+                ('SOL-PON-02', 'Solda Ponto 02', 'Solda', 75),
+                ('SOL-01', 'Solda 01', 'Solda', 30),
+                ('SOL-02', 'Solda 02', 'Solda', 30),
+                # Acabamento
+                ('ACA-POL-01', 'Polimento 01', 'Acabamento', 50),
+                ('ACA-01', 'Acabamento 01', 'Acabamento', 50),
+            ]
+            for ordem, (cod, nome, setor, meta) in enumerate(exemplos, 1):
+                db.add(Maquina(nome=nome, codigo=cod, setor=setor,
+                               ativa=True, ordem=ordem, meta_pph=meta))
+            print(f'[bootstrap] {len(exemplos)} máquinas de exemplo criadas em 5 setores')
         db.commit()
     finally:
         db.close()
@@ -1461,6 +1487,113 @@ def api_apontamento_excluir():
         db.delete(ap)
         db.commit()
         return jsonify({'ok': True})
+    finally:
+        db.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API — Admin: backup e restauração (base completa do site)
+# ─────────────────────────────────────────────────────────────────────────────
+_BACKUP_MODELOS = [
+    ('config', Config),
+    ('usuarios', Usuario),
+    ('maquinas', Maquina),
+    ('apontamentos', Apontamento),
+    ('logs', ApontamentoLog),
+]
+
+
+def _dump_row(obj):
+    d = {}
+    for col in obj.__table__.columns:
+        v = getattr(obj, col.name)
+        if isinstance(v, datetime):
+            v = v.isoformat()
+        d[col.name] = v
+    return d
+
+
+def _load_row(Model, d):
+    cols = {c.name: c for c in Model.__table__.columns}
+    kwargs = {}
+    for k, v in (d or {}).items():
+        col = cols.get(k)
+        if col is None:
+            continue
+        if v is not None and isinstance(col.type, DateTime):
+            try:
+                v = datetime.fromisoformat(str(v).replace('Z', ''))
+            except (ValueError, TypeError):
+                v = None
+        kwargs[k] = v
+    return Model(**kwargs)
+
+
+def _reset_sequences(db):
+    """No PostgreSQL, ressincroniza as sequences de id após restaurar ids explícitos."""
+    if engine.dialect.name != 'postgresql':
+        return
+    for _, Model in _BACKUP_MODELOS:
+        tabela = Model.__tablename__
+        db.execute(text(
+            "SELECT setval(pg_get_serial_sequence(:t, 'id'), "
+            "(SELECT COALESCE(MAX(id), 1) FROM " + tabela + "))"
+        ), {'t': tabela})
+
+
+@app.route('/api/admin/backup')
+@perfil_obrigatorio('admin')
+def api_backup():
+    db = Session()
+    try:
+        data = {'version': 1, 'gerado_em': datetime.utcnow().isoformat() + 'Z'}
+        for chave, Model in _BACKUP_MODELOS:
+            data[chave] = [_dump_row(x) for x in db.query(Model).all()]
+        bio = io.BytesIO(json.dumps(data, ensure_ascii=False, default=str).encode('utf-8'))
+        bio.seek(0)
+        nome = f"backup_producao_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.json"
+        return send_file(bio, as_attachment=True, download_name=nome,
+                         mimetype='application/json')
+    finally:
+        db.close()
+
+
+@app.route('/api/admin/restore', methods=['POST'])
+@perfil_obrigatorio('admin')
+def api_restore():
+    # Aceita arquivo (multipart 'arquivo') ou JSON no corpo.
+    payload = None
+    arq = request.files.get('arquivo')
+    if arq is not None:
+        try:
+            payload = json.loads(arq.read().decode('utf-8'))
+        except (ValueError, UnicodeDecodeError):
+            return jsonify({'ok': False, 'erro': 'Arquivo de backup inválido.'}), 400
+    else:
+        payload = request.get_json(force=True, silent=True)
+    if not isinstance(payload, dict) or 'usuarios' not in payload or 'maquinas' not in payload:
+        return jsonify({'ok': False, 'erro': 'Backup inválido ou incompleto.'}), 400
+
+    db = Session()
+    try:
+        # Apaga tudo (filhos primeiro por causa das referências).
+        for chave, Model in reversed(_BACKUP_MODELOS):
+            db.query(Model).delete()
+        db.commit()
+        # Reinsere preservando os ids.
+        contagem = {}
+        for chave, Model in _BACKUP_MODELOS:
+            linhas = payload.get(chave, []) or []
+            for d in linhas:
+                db.add(_load_row(Model, d))
+            contagem[chave] = len(linhas)
+        db.commit()
+        _reset_sequences(db)
+        db.commit()
+        return jsonify({'ok': True, 'contagem': contagem})
+    except Exception as e:  # noqa: BLE001 — devolve o motivo ao admin
+        db.rollback()
+        return jsonify({'ok': False, 'erro': 'Falha ao restaurar: ' + str(e)}), 500
     finally:
         db.close()
 
