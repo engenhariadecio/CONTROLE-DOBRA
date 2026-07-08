@@ -32,7 +32,7 @@ from flask import (
 from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import (
     create_engine, Column, Integer, String, DateTime, Float, Text,
-    Boolean, inspect, text
+    Boolean, LargeBinary, inspect, text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session
 from openpyxl import Workbook
@@ -86,6 +86,77 @@ LISTA_MESTRA_ARQUIVOS = [
     'exemplo_lista_mestra_sap.txt',
 ]
 
+# ── Tempos do SAP (planilha de tempos): tempo Máquina (min/peça) por peça e centro ──
+_tempos_lock = threading.Lock()
+_tempos = {}          # { 'CENTRO': { 'codigo': {'min': float, 'op': str, 'desc': str} } }
+_tempos_desc = {}     # { 'codigo': 'Texto breve material' }  (para puxar descrição pelo código)
+_tempos_status = {'carregada': False, 'total': 0, 'arquivo': '', 'erro': None}
+
+TEMPOS_ARQUIVOS = ['tempos_sap.xlsx', 'tempos.xlsx', 'tempos_sap.csv']
+
+# Centro de trabalho do SAP que corresponde a cada setor do DECIOMES.
+# Ajustável em Configurações (cfg 'centro_por_setor').
+CENTRO_POR_SETOR_PADRAO = {
+    'Dobra': 'DO01', 'Corte': 'LA01', 'Estamparia': 'PU01',
+    'Solda': 'SP01', 'Acabamento': 'AC01',
+}
+
+
+def _norm_cod(v):
+    """Normaliza um código de material para chave (remove .0, espaços)."""
+    s = str(v).strip() if v is not None else ''
+    if s.endswith('.0'):
+        s = s[:-2]
+    return s
+
+
+def _ler_arquivo_dados(nome):
+    """Bytes de uma planilha enviada pelo admin (guardada no banco), ou None."""
+    try:
+        db = Session()
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        a = db.query(ArquivoDados).filter_by(nome=nome).first()
+        if a and a.conteudo:
+            return bytes(a.conteudo), (a.arquivo or nome)
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        try:
+            db.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _salvar_arquivo_dados(nome, arquivo, conteudo):
+    db = Session()
+    try:
+        a = db.query(ArquivoDados).filter_by(nome=nome).first() or ArquivoDados(nome=nome)
+        if not a.id:
+            db.add(a)
+        a.arquivo = arquivo
+        a.conteudo = conteudo
+        a.tamanho = len(conteudo)
+        a.atualizado_em = datetime.utcnow()
+        db.commit()
+    finally:
+        db.close()
+
+
+def _linhas_de_bytes(dados, obrigatorias=None):
+    """Converte bytes (xlsx/csv) em linhas. Escolhe a aba certa no xlsx."""
+    if dados[:2] == b'PK':   # xlsx (zip)
+        if obrigatorias:
+            return _linhas_do_xlsx_por_colunas(io.BytesIO(dados), obrigatorias)
+        return _linhas_do_xlsx(io.BytesIO(dados))
+    raw = dados.decode('utf-8-sig', errors='replace')
+    sep = '\t' if raw.count('\t') > raw.count(';') and raw.count('\t') > raw.count(',') \
+        else (';' if raw.count(';') > raw.count(',') else ',')
+    return list(csv.reader(io.StringIO(raw), delimiter=sep)), 'csv'
+
+
 
 def _norm_ordem(v):
     """Normaliza a OP bipada: remove '.0', e se o código de barras vier com mais
@@ -125,6 +196,9 @@ def _achar_colunas(linhas):
             elif ('quantidade da ordem' in nome or nome == 'quantidade total'
                   or nome == 'quantidade') and 'qtd' not in idx:
                 idx['qtd'] = j
+            elif nome.replace('-', ' ').replace('_', ' ') in ('part number', 'partnumber') \
+                    and 'part' not in idx:
+                idx['part'] = j
         if 'ordem' in idx and 'material' in idx:
             return i, idx
     return None
@@ -135,10 +209,10 @@ def _parsear_linhas_mestre(linhas):
     if achado:
         cab, col = achado
         i_ordem, i_mat = col.get('ordem', 0), col.get('material', 1)
-        i_texto, i_qtd = col.get('texto'), col.get('qtd')
+        i_texto, i_qtd, i_part = col.get('texto'), col.get('qtd'), col.get('part')
         inicio = cab + 1
     else:
-        i_ordem, i_mat, i_texto, i_qtd, inicio = 0, 2, 3, 4, 0
+        i_ordem, i_mat, i_texto, i_qtd, i_part, inicio = 0, 2, 3, 4, None, 0
 
     def val(row, idx):
         if idx is None or idx >= len(row) or row[idx] is None:
@@ -157,22 +231,135 @@ def _parsear_linhas_mestre(linhas):
             qtd = int(float(q)) if q else 0
         except (ValueError, TypeError):
             qtd = 0
-        por_ordem[ordem] = {'ordem': ordem, 'material': val(row, i_mat),
-                            'texto_breve': val(row, i_texto), 'quantidade': qtd}
+        mat = val(row, i_mat)
+        if mat.endswith('.0'):
+            mat = mat[:-2]
+        por_ordem[ordem] = {'ordem': ordem, 'material': mat,
+                            'texto_breve': val(row, i_texto), 'quantidade': qtd,
+                            'part_number': val(row, i_part)}
     return por_ordem
 
 
+def _linhas_do_xlsx(conteudo):
+    """Lê um xlsx (caminho ou BytesIO) e devolve as linhas da melhor aba:
+    a primeira cujo cabeçalho tenha as colunas Ordem e Material."""
+    from openpyxl import load_workbook as _lw
+    wb = _lw(conteudo, read_only=True, data_only=True)
+    melhor = None
+    for nome in wb.sheetnames:
+        ws = wb[nome]
+        amostra = []
+        for k, row in enumerate(ws.iter_rows(values_only=True)):
+            amostra.append(list(row))
+            if k >= 9:
+                break
+        if _achar_colunas(amostra):
+            melhor = nome
+            break
+    if melhor is None:
+        melhor = wb.sheetnames[0]
+    ws = wb[melhor]
+    return [list(row) for row in ws.iter_rows(values_only=True)], melhor
+
+
+def _url_download_sharepoint(url):
+    """Converte um link de compartilhamento do SharePoint/OneDrive em link de
+    download direto (acrescenta download=1)."""
+    u = (url or '').strip()
+    if not u:
+        return u
+    if 'download=1' in u:
+        return u
+    if 'sharepoint.com' in u or '1drv.ms' in u or 'onedrive' in u.lower():
+        return u + ('&download=1' if '?' in u else '?download=1')
+    return u
+
+
+def _baixar_lista_url(url):
+    """Baixa a planilha da URL (SharePoint) e devolve (linhas, rotulo)."""
+    import urllib.request
+    req = urllib.request.Request(
+        _url_download_sharepoint(url),
+        headers={'User-Agent': 'Mozilla/5.0 (DECIOMES)'})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        dados = resp.read()
+    if not dados:
+        raise ValueError('resposta vazia da URL')
+    # xlsx é um zip (PK); senão, trata como texto csv/txt
+    if dados[:2] == b'PK':
+        linhas, aba = _linhas_do_xlsx(io.BytesIO(dados))
+        return linhas, f'SharePoint · aba "{aba}"'
+    raw = dados.decode('utf-8-sig', errors='replace')
+    if raw.lstrip()[:15].lower().startswith('<!doctype') or raw.lstrip()[:6].lower() == '<html>':
+        raise ValueError('a URL devolveu uma página de login — o link precisa ser '
+                         'de compartilhamento "Qualquer pessoa com o link".')
+    sep = '\t' if raw.count('\t') > raw.count(';') and raw.count('\t') > raw.count(',') \
+        else (';' if raw.count(';') > raw.count(',') else ',')
+    return list(csv.reader(io.StringIO(raw), delimiter=sep)), 'SharePoint · csv'
+
+
+def get_lista_mestra_url():
+    """URL configurada (Config no banco tem prioridade; senão variável de ambiente)."""
+    try:
+        url = cfg_get('lista_mestra_url', '') or ''
+    except Exception:  # banco ainda não pronto
+        url = ''
+    return (url or os.environ.get('LISTA_MESTRA_URL', '')).strip()
+
+
 def carregar_lista_mestre():
+    """Carrega a lista mestra: da URL do SharePoint (se configurada) ou do
+    arquivo local. Em caso de falha na URL, mantém a última lista carregada."""
     global _lista_por_ordem, _lista_status
+    url = get_lista_mestra_url()
+    if url:
+        try:
+            linhas, rotulo = _baixar_lista_url(url)
+            por_ordem = _parsear_linhas_mestre(linhas)
+            if not por_ordem:
+                raise ValueError('nenhuma OP encontrada na planilha baixada')
+            with _lista_lock:
+                _lista_por_ordem = por_ordem
+                _lista_status = {'carregada': True, 'total': len(por_ordem),
+                                 'arquivo': rotulo, 'fonte': 'url', 'erro': None,
+                                 'quando': datetime.utcnow().isoformat() + 'Z'}
+            print(f'[lista_mestra] {len(por_ordem)} ordens carregadas do SharePoint.')
+            return
+        except Exception as e:  # noqa: BLE001
+            print(f'[lista_mestra] ERRO ao baixar do SharePoint: {e}')
+            with _lista_lock:
+                if _lista_status.get('carregada'):
+                    # mantém a lista anterior em memória, só registra o erro
+                    _lista_status['erro'] = f'Falha ao atualizar do SharePoint: {e}'
+                    return
+            # sem lista anterior → tenta o arquivo local como reserva
+
     caminho = _achar_arquivo_mestre()
+    # 2) arquivo enviado pelo admin (guardado no banco)
+    blob = _ler_arquivo_dados('lista_mestra')
+    if blob:
+        try:
+            linhas, _aba = _linhas_de_bytes(blob[0])
+            por_ordem = _parsear_linhas_mestre(linhas)
+            if por_ordem:
+                with _lista_lock:
+                    _lista_por_ordem = por_ordem
+                    _lista_status = {'carregada': True, 'total': len(por_ordem),
+                                     'arquivo': f'enviado · {blob[1]}', 'fonte': 'upload',
+                                     'erro': None, 'quando': datetime.utcnow().isoformat() + 'Z'}
+                print(f'[lista_mestra] {len(por_ordem)} ordens do arquivo enviado ({blob[1]}).')
+                return
+        except Exception as e:  # noqa: BLE001
+            print('[lista_mestra] erro ao ler arquivo enviado:', e)
+
     if not caminho:
         with _lista_lock:
-            _lista_status = {'carregada': False, 'total': 0, 'arquivo': '',
-                             'erro': 'Arquivo lista_mestra.xlsx/.csv/.txt não encontrado.'}
+            _lista_status = {'carregada': False, 'total': 0, 'arquivo': '', 'fonte': 'arquivo',
+                             'erro': ('Configure a URL do SharePoint em Configurações ou coloque '
+                                      'o arquivo lista_mestra.xlsx na raiz.')}
         return
     try:
         nome = caminho.lower()
-        linhas = []
         if nome.endswith('.csv') or nome.endswith('.txt'):
             with open(caminho, encoding='utf-8-sig', errors='replace') as f:
                 raw = f.read()
@@ -180,20 +367,221 @@ def carregar_lista_mestre():
                 else (';' if raw.count(';') > raw.count(',') else ',')
             linhas = list(csv.reader(io.StringIO(raw), delimiter=sep))
         else:
-            from openpyxl import load_workbook as _lw
-            wb = _lw(caminho, read_only=True, data_only=True)
-            for row in wb.active.iter_rows(values_only=True):
-                linhas.append(list(row))
+            linhas, _aba = _linhas_do_xlsx(caminho)
         por_ordem = _parsear_linhas_mestre(linhas)
         with _lista_lock:
             _lista_por_ordem = por_ordem
             _lista_status = {'carregada': True, 'total': len(por_ordem),
-                             'arquivo': os.path.basename(caminho), 'erro': None}
+                             'arquivo': os.path.basename(caminho), 'fonte': 'arquivo',
+                             'erro': None, 'quando': datetime.utcnow().isoformat() + 'Z'}
         print(f'[lista_mestra] Carregada: {len(por_ordem)} ordens de "{os.path.basename(caminho)}".')
     except Exception as e:  # noqa: BLE001
         with _lista_lock:
-            _lista_status = {'carregada': False, 'total': 0, 'arquivo': '', 'erro': str(e)}
+            _lista_status = {'carregada': False, 'total': 0, 'arquivo': '', 'fonte': 'arquivo',
+                             'erro': str(e)}
         print(f'[lista_mestra] ERRO ao carregar: {e}')
+
+
+LISTA_AUTO_MINUTOS = int(os.environ.get('LISTA_MESTRA_AUTO_MIN', '30') or 30)
+
+
+def _auto_atualizar_lista():
+    """Thread de fundo: quando há URL configurada, re-baixa a lista periodicamente
+    para acompanhar as edições feitas na planilha do SharePoint."""
+    import time
+    while True:
+        time.sleep(max(5, LISTA_AUTO_MINUTOS) * 60)
+        try:
+            if get_lista_mestra_url():
+                carregar_lista_mestre()
+        except Exception as e:  # noqa: BLE001
+            print('[lista_mestra] erro na atualização automática:', e)
+
+
+def _achar_arquivo(nomes):
+    base = os.path.dirname(os.path.abspath(__file__))
+    for nome in nomes:
+        caminho = os.path.join(base, nome)
+        if os.path.isfile(caminho):
+            return caminho
+    return None
+
+
+def carregar_tempos_sap():
+    """Carrega a planilha de tempos do SAP e indexa o tempo Máquina (min/peça)
+    por centro de trabalho e por código de material."""
+    global _tempos, _tempos_desc, _tempos_status
+    url = (cfg_get('tempos_url', '') if _config_pronto() else '') or os.environ.get('TEMPOS_URL', '')
+    url = (url or '').strip()
+    try:
+        if url:
+            linhas, rotulo = _baixar_lista_url(url)
+        else:
+            blob = _ler_arquivo_dados('tempos_sap')
+            if blob:
+                linhas, _aba = _linhas_de_bytes(blob[0], obrigatorias=('material', 'máquina'))
+                rotulo = f'enviado · {blob[1]}'
+            else:
+                caminho = _achar_arquivo(TEMPOS_ARQUIVOS)
+                if not caminho:
+                    with _tempos_lock:
+                        _tempos_status = {'carregada': False, 'total': 0, 'arquivo': '',
+                                          'erro': 'Planilha de tempos não encontrada (tempos_sap.xlsx) '
+                                                  'nem enviada nem URL configurada.'}
+                    return
+                if caminho.lower().endswith('.csv'):
+                    with open(caminho, encoding='utf-8-sig', errors='replace') as f:
+                        raw = f.read()
+                    sep = ';' if raw.count(';') > raw.count(',') else ','
+                    linhas = list(csv.reader(io.StringIO(raw), delimiter=sep))
+                else:
+                    linhas, _aba = _linhas_do_xlsx_por_colunas(
+                        caminho, obrigatorias=('material', 'máquina'))
+                rotulo = os.path.basename(caminho)
+
+        # localizar colunas
+        def norm(s):
+            return str(s).strip().lower() if s is not None else ''
+        cab_i, col = None, {}
+        for i, row in enumerate(linhas[:8]):
+            m = {}
+            for j, nome in enumerate(norm(c) for c in row):
+                if nome == 'material':
+                    m['mat'] = j
+                elif nome == 'máquina' or nome == 'maquina':
+                    m['maq'] = j
+                elif nome == 'centro trabalho' or nome == 'centro de trabalho':
+                    m['centro'] = j
+                elif nome == 'texto breve operação' or nome == 'texto breve operacao':
+                    m['op'] = j
+                elif nome == 'texto breve material':
+                    m['desc'] = j
+            if 'mat' in m and 'maq' in m:
+                cab_i, col = i, m
+                break
+        if cab_i is None:
+            raise ValueError('não encontrei as colunas Material e Máquina na planilha de tempos.')
+
+        tempos = {}
+        descs = {}
+        total = 0
+        for row in linhas[cab_i + 1:]:
+            if not row:
+                continue
+            def val(k):
+                j = col.get(k)
+                return row[j] if j is not None and j < len(row) else None
+            cod = _norm_cod(val('mat'))
+            t = val('maq')
+            if not cod or not isinstance(t, (int, float)) or t <= 0:
+                if cod and val('desc') and cod not in descs:
+                    descs[cod] = str(val('desc')).strip()
+                continue
+            centro = (str(val('centro')).strip() if val('centro') else '') or '—'
+            op = str(val('op')).strip() if val('op') else ''
+            desc = str(val('desc')).strip() if val('desc') else ''
+            if desc and cod not in descs:
+                descs[cod] = desc
+            porcentro = tempos.setdefault(centro, {})
+            # mantém o menor tempo quando a peça repete a mesma operação/centro
+            if cod not in porcentro or float(t) < porcentro[cod]['min']:
+                porcentro[cod] = {'min': float(t), 'op': op, 'desc': desc}
+                total += 1
+        with _tempos_lock:
+            _tempos = tempos
+            _tempos_desc = descs
+            _tempos_status = {'carregada': True, 'total': sum(len(v) for v in tempos.values()),
+                              'centros': sorted(tempos.keys()), 'arquivo': rotulo, 'erro': None,
+                              'quando': datetime.utcnow().isoformat() + 'Z'}
+        print(f'[tempos_sap] Carregado: {sum(len(v) for v in tempos.values())} tempos '
+              f'em {len(tempos)} centros de "{rotulo}".')
+    except Exception as e:  # noqa: BLE001
+        with _tempos_lock:
+            if not _tempos_status.get('carregada'):
+                _tempos_status = {'carregada': False, 'total': 0, 'arquivo': '', 'erro': str(e)}
+            else:
+                _tempos_status['erro'] = f'Falha ao atualizar tempos: {e}'
+        print(f'[tempos_sap] ERRO: {e}')
+
+
+def _linhas_do_xlsx_por_colunas(conteudo, obrigatorias):
+    """Como _linhas_do_xlsx, mas escolhe a aba cujo cabeçalho contenha as
+    colunas obrigatórias (por nome, em minúsculas)."""
+    from openpyxl import load_workbook as _lw
+    wb = _lw(conteudo, read_only=True, data_only=True)
+    alvo = None
+    for nome in wb.sheetnames:
+        ws = wb[nome]
+        for k, row in enumerate(ws.iter_rows(values_only=True)):
+            nomes = {str(c).strip().lower() for c in row if c is not None}
+            if all(o in nomes for o in obrigatorias):
+                alvo = nome
+                break
+            if k >= 8:
+                break
+        if alvo:
+            break
+    if alvo is None:
+        alvo = wb.sheetnames[0]
+    ws = wb[alvo]
+    return [list(row) for row in ws.iter_rows(values_only=True)], alvo
+
+
+def _config_pronto():
+    try:
+        Session()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def get_centro_por_setor():
+    try:
+        m = cfg_get('centro_por_setor', None)
+    except Exception:  # noqa: BLE001
+        m = None
+    return m if isinstance(m, dict) and m else dict(CENTRO_POR_SETOR_PADRAO)
+
+
+def tempo_sap_unitario(codigo, setor):
+    """Tempo Máquina do SAP (min/peça) para a peça no centro do setor.
+    Se não achar no centro do setor, tenta qualquer centro (menor tempo)."""
+    cod = _norm_cod(codigo)
+    if not cod:
+        return None
+    centro = get_centro_por_setor().get(setor or '', '')
+    with _tempos_lock:
+        if centro and centro in _tempos and cod in _tempos[centro]:
+            return _tempos[centro][cod]['min']
+        # procura em qualquer centro
+        achados = [d[cod]['min'] for d in _tempos.values() if cod in d]
+    return min(achados) if achados else None
+
+
+def descricao_por_codigo(codigo):
+    """Descrição (texto breve material) a partir do código — usa tempos e lista mestra."""
+    cod = _norm_cod(codigo)
+    with _tempos_lock:
+        d = _tempos_desc.get(cod)
+    if d:
+        return d
+    # tenta na lista mestra (por material)
+    with _lista_lock:
+        for it in _lista_por_ordem.values():
+            if _norm_cod(it.get('material')) == cod:
+                return it.get('texto_breve') or ''
+    return ''
+
+
+def _auto_atualizar_tempos():
+    import time
+    while True:
+        time.sleep(max(15, LISTA_AUTO_MINUTOS) * 60)
+        try:
+            if (cfg_get('tempos_url', '') if _config_pronto() else '') or os.environ.get('TEMPOS_URL'):
+                carregar_tempos_sap()
+        except Exception as e:  # noqa: BLE001
+            print('[tempos_sap] erro na atualização automática:', e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -435,6 +823,18 @@ class ApontamentoLog(Base):
     depois_json = Column(Text, default='')
 
 
+class ArquivoDados(Base):
+    """Planilhas enviadas pelo admin (lista mestra, tempos) guardadas no banco,
+    para persistirem entre deploys e serem trocadas sem mexer no GitHub."""
+    __tablename__ = 'arquivos_dados'
+    id = Column(Integer, primary_key=True)
+    nome = Column(String(40), unique=True, index=True)   # 'lista_mestra' | 'tempos_sap'
+    arquivo = Column(String(200), default='')            # nome original
+    conteudo = Column(LargeBinary)                        # bytes do xlsx/csv
+    tamanho = Column(Integer, default=0)
+    atualizado_em = Column(DateTime, default=datetime.utcnow)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Configurações do sistema (setores, motivos de pausa, setor ativo)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -664,6 +1064,21 @@ try:
     carregar_lista_mestre()
 except Exception as e:  # noqa: BLE001
     print('[lista_mestra] ERRO ao carregar no startup:', e)
+
+try:
+    threading.Thread(target=_auto_atualizar_lista, daemon=True).start()
+except Exception as e:  # noqa: BLE001
+    print('[lista_mestra] ERRO ao iniciar atualização automática:', e)
+
+try:
+    carregar_tempos_sap()
+except Exception as e:  # noqa: BLE001
+    print('[tempos_sap] ERRO ao carregar no startup:', e)
+
+try:
+    threading.Thread(target=_auto_atualizar_tempos, daemon=True).start()
+except Exception as e:  # noqa: BLE001
+    print('[tempos_sap] ERRO ao iniciar atualização automática:', e)
 
 
 @app.teardown_appcontext
@@ -928,8 +1343,23 @@ def api_buscar_ordem(ordem):
     with _lista_lock:
         item = _lista_por_ordem.get(o)
     if item:
-        return jsonify({'encontrado': True, **item})
+        setor = setor_do_usuario()
+        return jsonify({'encontrado': True,
+                        'tempo_sap': tempo_sap_unitario(item.get('material'), setor),
+                        **item})
     return jsonify({'encontrado': False, 'ordem': o})
+
+
+@app.route('/api/buscar_codigo/<path:codigo>')
+@api_login_obrigatorio
+def api_buscar_codigo(codigo):
+    """Consulta uma peça pelo código/material: devolve a descrição e o tempo SAP."""
+    cod = _norm_cod(codigo)
+    desc = descricao_por_codigo(cod)
+    setor = (request.args.get('setor') or setor_do_usuario())
+    t = tempo_sap_unitario(cod, setor)
+    return jsonify({'encontrado': bool(desc or t is not None),
+                    'codigo': cod, 'descricao': desc, 'tempo_sap': t})
 
 
 @app.route('/api/lista_status')
@@ -937,6 +1367,8 @@ def api_buscar_ordem(ordem):
 def api_lista_status():
     with _lista_lock:
         st = dict(_lista_status)
+    st['url'] = get_lista_mestra_url()
+    st['auto_min'] = LISTA_AUTO_MINUTOS
     return jsonify(st)
 
 
@@ -946,6 +1378,74 @@ def api_lista_recarregar():
     carregar_lista_mestre()
     with _lista_lock:
         return jsonify({'ok': True, **_lista_status})
+
+
+@app.route('/api/tempos_status')
+@api_login_obrigatorio
+def api_tempos_status():
+    with _tempos_lock:
+        st = dict(_tempos_status)
+    try:
+        st['url'] = (cfg_get('tempos_url', '') or os.environ.get('TEMPOS_URL', '')).strip()
+    except Exception:  # noqa: BLE001
+        st['url'] = ''
+    st['centro_por_setor'] = get_centro_por_setor()
+    return jsonify(st)
+
+
+@app.route('/api/admin/tempos/recarregar', methods=['POST'])
+@perfil_obrigatorio('admin')
+def api_tempos_recarregar():
+    carregar_tempos_sap()
+    with _tempos_lock:
+        return jsonify({'ok': True, **_tempos_status})
+
+
+@app.route('/api/admin/lista/upload', methods=['POST'])
+@perfil_obrigatorio('admin')
+def api_lista_upload():
+    f = request.files.get('arquivo')
+    if not f or not f.filename:
+        return jsonify({'ok': False, 'erro': 'Selecione um arquivo .xlsx, .csv ou .txt.'}), 400
+    dados = f.read()
+    if not dados:
+        return jsonify({'ok': False, 'erro': 'Arquivo vazio.'}), 400
+    try:
+        linhas, _r = _linhas_de_bytes(dados)
+        por = _parsear_linhas_mestre(linhas)
+        if not por:
+            return jsonify({'ok': False, 'erro': 'Não encontrei OPs (colunas Ordem e Material) no arquivo.'}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({'ok': False, 'erro': f'Não consegui ler o arquivo: {e}'}), 400
+    _salvar_arquivo_dados('lista_mestra', f.filename, dados)
+    carregar_lista_mestre()
+    with _lista_lock:
+        return jsonify({'ok': True, **_lista_status})
+
+
+@app.route('/api/admin/tempos/upload', methods=['POST'])
+@perfil_obrigatorio('admin')
+def api_tempos_upload():
+    f = request.files.get('arquivo')
+    if not f or not f.filename:
+        return jsonify({'ok': False, 'erro': 'Selecione um arquivo .xlsx ou .csv.'}), 400
+    dados = f.read()
+    if not dados:
+        return jsonify({'ok': False, 'erro': 'Arquivo vazio.'}), 400
+    try:
+        linhas, _r = _linhas_de_bytes(dados, obrigatorias=('material', 'máquina'))
+        cabs = set()
+        for row in linhas[:8]:
+            cabs |= {str(c).strip().lower() for c in row if c is not None}
+        if 'material' not in cabs or not ({'máquina', 'maquina'} & cabs):
+            return jsonify({'ok': False, 'erro': 'A planilha de tempos precisa ter as colunas '
+                                                 '"Material" e "Máquina".'}), 400
+    except Exception as e:  # noqa: BLE001
+        return jsonify({'ok': False, 'erro': f'Não consegui ler o arquivo: {e}'}), 400
+    _salvar_arquivo_dados('tempos_sap', f.filename, dados)
+    carregar_tempos_sap()
+    with _tempos_lock:
+        return jsonify({'ok': True, **_tempos_status})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1360,10 +1860,27 @@ def api_dashboard():
             'motivos_pausa': motivos_lst,
             'por_dia': por_dia_lst,
             'em_andamento': [a.to_dict(agora, meta_padrao) for a in em_andamento],
-            'ultimos': [a.to_dict(agora, meta_padrao) for a in finalizados[:40]],
+            'ultimos': [_ultimo_com_tempos(a, agora, meta_padrao) for a in finalizados[:40]],
+            'tempos_carregados': _tempos_status.get('carregada', False),
         })
     finally:
         db.close()
+
+
+def _ultimo_com_tempos(a, agora, meta_padrao):
+    """to_dict do apontamento + comparação tempo real × tempo SAP (min/peça)."""
+    d = a.to_dict(agora, meta_padrao)
+    real = None
+    if a.quantidade_produzida and a.producao_seg:
+        real = (a.producao_seg / 60.0) / a.quantidade_produzida   # min/peça
+    sap = tempo_sap_unitario(a.codigo, a.setor)
+    d['tempo_real_unit'] = round(real, 3) if real is not None else None
+    d['tempo_sap_unit'] = round(sap, 3) if sap is not None else None
+    if real and sap and sap > 0:
+        d['desvio_pct'] = round((real - sap) / sap * 100, 1)   # + = real acima do SAP
+    else:
+        d['desvio_pct'] = None
+    return d
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1561,6 +2078,21 @@ def api_config_salvar():
         cfg_set('meta_pph_padrao', max(0.0, _float(d.get('meta_pph_padrao'), 0)))
     if 'meta_oee' in d:
         cfg_set('meta_oee', min(100.0, max(0.0, _float(d.get('meta_oee'), META_OEE_PADRAO))))
+    if 'lista_mestra_url' in d:
+        cfg_set('lista_mestra_url', (d.get('lista_mestra_url') or '').strip())
+        try:
+            carregar_lista_mestre()
+        except Exception as e:  # noqa: BLE001
+            print('[lista_mestra] erro ao recarregar após salvar URL:', e)
+    if 'tempos_url' in d:
+        cfg_set('tempos_url', (d.get('tempos_url') or '').strip())
+        try:
+            carregar_tempos_sap()
+        except Exception as e:  # noqa: BLE001
+            print('[tempos_sap] erro ao recarregar após salvar URL:', e)
+    if isinstance(d.get('centro_por_setor'), dict):
+        cfg_set('centro_por_setor', {str(k): str(v).strip()
+                                     for k, v in d['centro_por_setor'].items() if v})
     if isinstance(d.get('turnos'), list):
         turnos = []
         for t in d['turnos']:
@@ -1598,6 +2130,22 @@ def _seg_hms(seg):
     return f'{h:02d}:{m:02d}:{s:02d}'
 
 
+def _tempo_real_unit(a):
+    """Tempo real por peça (min/peça) do apontamento, ou '' se não der."""
+    if a.quantidade_produzida and a.producao_seg:
+        return round((a.producao_seg / 60.0) / a.quantidade_produzida, 3)
+    return ''
+
+
+def _desvio_unit(a):
+    """Desvio % do tempo real em relação ao tempo SAP (por peça)."""
+    real = _tempo_real_unit(a)
+    sap = tempo_sap_unitario(a.codigo, a.setor)
+    if isinstance(real, (int, float)) and sap and sap > 0:
+        return round((real - sap) / sap * 100, 1)
+    return ''
+
+
 @app.route('/api/download/apontamentos')
 @perfil_obrigatorio('gerencia', 'admin')
 def download_apontamentos():
@@ -1632,6 +2180,7 @@ def download_apontamentos():
                 'Descrição', 'Qtd prevista', 'Qtd produzida', 'Refugo',
                 'Início', 'Fim', 'Tempo produtivo', 'Pausa total',
                 'Nº pausas', 'Meta pç/h', 'Peças/hora',
+                'T. real min/pç', 'T. SAP min/pç', 'Desvio %',
                 'Disponibilidade %', 'Desempenho %', 'Qualidade %', 'OEE %',
                 'Observação']
         ws.append(cols)
@@ -1662,12 +2211,14 @@ def download_apontamentos():
                 fimloc.strftime('%H:%M:%S') if fimloc else '',
                 _seg_hms(prod), _seg_hms(a.pausa_total_seg()),
                 len(a._pausas()), round(a.meta_efetiva(meta_padrao), 2), pph,
+                _tempo_real_unit(a), _pex(tempo_sap_unitario(a.codigo, a.setor)),
+                _desvio_unit(a),
                 _pex(_pct(o['disponibilidade'])), _pex(_pct(o['desempenho'])),
                 _pex(_pct(o['qualidade'])), _pex(_pct(o['oee'])),
                 a.observacao or '',
             ])
         larguras = [12, 10, 14, 16, 20, 12, 12, 14, 30, 12, 13, 10, 10, 10, 15, 13,
-                    10, 10, 11, 16, 15, 14, 10, 30]
+                    10, 10, 11, 13, 13, 10, 16, 15, 14, 10, 30]
         for i, w in enumerate(larguras, 1):
             ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
         ws.freeze_panes = 'A2'

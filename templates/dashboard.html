@@ -366,15 +366,25 @@ function tickAtivos(){
     el.textContent = hms(base+delta);   // tempo de pausa cresce enquanto pausado
   });
 }
+function tempoMin(v){ return (v==null)?'<span class="muted">—</span>':(String(v).replace('.',',')+'<span class="muted"> min</span>'); }
+function tagDesvio(v){
+  if(v==null) return '<span class="muted">—</span>';
+  const cls = Math.abs(v)<=15 ? 'tag-green' : (Math.abs(v)<=40 ? 'tag-blue' : 'tag-red');
+  const sinal = v>0?'+':'';
+  return '<span class="tag '+cls+'">'+sinal+String(v).replace('.',',')+'%</span>';
+}
 function tabelaUltimos(rows){
   if(!rows || !rows.length) return '<div class="empty"><i class="bi bi-inbox"></i><p>Nenhum apontamento finalizado no período.</p></div>';
   return '<div class="tabela-wrap"><table class="tbl"><thead><tr>'
-    +'<th>Início</th><th>Turno</th><th>Máquina</th><th>OP</th><th>Operador</th><th class="td-num">Prod.</th><th class="td-num">Refugo</th>'
-    +'<th class="td-num">T. produtivo</th><th class="td-num">Pausa</th><th class="td-num">Pçs/h</th><th class="td-num">OEE</th></tr></thead><tbody>'
+    +'<th>Início</th><th>Turno</th><th>Máquina</th><th>OP</th><th>Peça</th><th>Operador</th><th class="td-num">Prod.</th>'
+    +'<th class="td-num">T. real/pç</th><th class="td-num">T. SAP/pç</th><th class="td-num">Desvio</th>'
+    +'<th class="td-num">Pçs/h</th><th class="td-num">OEE</th></tr></thead><tbody>'
     + rows.map(r=>'<tr><td class="nowrap">'+esc(r.inicio)+'</td><td>'+esc(r.turno||'—')+'</td><td>'+esc(r.maquina_nome)+'</td>'
-      +'<td><b>'+esc(r.op)+'</b></td><td>'+esc(r.operador_nome)+'</td>'
-      +'<td class="td-num">'+fmt(r.quantidade_produzida)+'</td><td class="td-num">'+fmt(r.refugo)+'</td>'
-      +'<td class="td-num mono">'+hms(r.producao_seg)+'</td><td class="td-num mono">'+hms(r.pausa_seg)+'</td>'
+      +'<td><b>'+esc(r.op)+'</b></td><td>'+esc(r.descricao||r.codigo||'—')+'</td><td>'+esc(r.operador_nome)+'</td>'
+      +'<td class="td-num">'+fmt(r.quantidade_produzida)+'</td>'
+      +'<td class="td-num mono">'+tempoMin(r.tempo_real_unit)+'</td>'
+      +'<td class="td-num mono">'+tempoMin(r.tempo_sap_unit)+'</td>'
+      +'<td class="td-num">'+tagDesvio(r.desvio_pct)+'</td>'
       +'<td class="td-num">'+r.pph+'</td><td class="td-num">'+tagOee(r.oee)+'</td>'
       +'</tr>').join('')
     + '</tbody></table></div>';

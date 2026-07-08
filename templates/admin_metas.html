@@ -35,10 +35,10 @@
     <div class="modal-body">
       <input type="hidden" id="pId">
       <div class="field field-full">
-        <label class="label">Código / material * <span class="hint">bipe a OP ou digite o código</span></label>
+        <label class="label">Código / material * <span class="hint">digite o código e tecle Enter — a descrição vem sozinha</span></label>
         <div class="scan-field">
           <i class="bi bi-upc-scan"></i>
-          <input class="input" id="pCodigo" placeholder="Bipe a OP ou digite o código…" autocomplete="off">
+          <input class="input" id="pCodigo" placeholder="Digite o código do material…" autocomplete="off">
         </div>
         <div id="pInfo" class="op-info" style="display:none;"></div>
       </div>
@@ -108,20 +108,24 @@ function editar(id){
   abrir('mMeta');
 }
 
-// Bipar OP/código: puxa código e descrição da lista mestra
+// Digitar o código: puxa a descrição (e mostra o tempo SAP se houver)
 async function consultarCod(){
   const v=document.getElementById('pCodigo').value.trim();
   const info=document.getElementById('pInfo');
   if(!v){ info.style.display='none'; return; }
   try{
-    const j=await api('/api/buscar_ordem/'+encodeURIComponent(v));
+    const j=await api('/api/buscar_codigo/'+encodeURIComponent(v));
     if(j.encontrado){
-      document.getElementById('pCodigo').value=j.material||v;
-      if(!document.getElementById('pDesc').value) document.getElementById('pDesc').value=j.texto_breve||'';
+      document.getElementById('pCodigo').value=j.codigo||v;
+      if(!document.getElementById('pDesc').value) document.getElementById('pDesc').value=j.descricao||'';
       info.className='op-info ok'; info.style.display='block';
-      info.innerHTML='<i class="bi bi-check-circle-fill"></i> '+esc(j.material||'')+' — '+esc(j.texto_breve||'');
+      info.innerHTML='<i class="bi bi-check-circle-fill"></i> '+esc(j.descricao||'(sem descrição)')
+        +(j.tempo_sap!=null?(' · tempo SAP '+String(j.tempo_sap).replace('.',',')+' min/pç'):'');
       document.getElementById('pPph').focus();
-    }else{ info.style.display='none'; }
+    }else{
+      info.className='op-info nf'; info.style.display='block';
+      info.innerHTML='<i class="bi bi-exclamation-triangle-fill"></i> Código não encontrado — você pode preencher a descrição manualmente.';
+    }
   }catch(e){ info.style.display='none'; }
 }
 document.getElementById('pCodigo').addEventListener('keydown',ev=>{ if(ev.key==='Enter'){ev.preventDefault(); consultarCod();} });

@@ -272,10 +272,12 @@ async function consultarOpIni(){
     if(j.encontrado){
       document.getElementById('iniOp').value=j.ordem;
       document.getElementById('iniCodigo').value=j.material||'';
-      document.getElementById('iniDesc').value=j.texto_breve||'';
+      document.getElementById('iniDesc').value=j.texto_breve||j.part_number||'';
       if(j.quantidade) document.getElementById('iniPrev').value=j.quantidade;
       info.className='op-info ok'; info.style.display='block';
-      info.innerHTML='<i class="bi bi-check-circle-fill"></i> '+esc(j.material||'')+' — '+esc(j.texto_breve||'')+(j.quantidade?(' · prev. '+j.quantidade):'');
+      info.innerHTML='<i class="bi bi-check-circle-fill"></i> '+esc(j.material||'')+' — '+esc(j.texto_breve||'')
+        +(j.part_number?(' · PN '+esc(j.part_number)):'')
+        +(j.quantidade?(' · prev. '+j.quantidade):'');
       document.getElementById('iniOperador').focus();
     }else{
       info.className='op-info nf'; info.style.display='block';

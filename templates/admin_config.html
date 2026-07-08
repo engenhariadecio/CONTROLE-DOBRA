@@ -67,11 +67,45 @@
 
 <div class="card card-pad mt">
   <div class="card-title"><i class="bi bi-upc-scan"></i>Lista mestra (OPs do SAP)</div>
-  <p class="hint" style="margin-bottom:12px;">A OP é bipada no final da produção e puxa material, descrição e quantidade desta lista. Coloque o arquivo <b>lista_mestra.xlsx</b> (ou .csv/.txt) na raiz do projeto — mesmo modelo do sistema Banho. Ao publicar no GitHub/Railway, o arquivo já vai junto.</p>
+  <p class="hint" style="margin-bottom:12px;">A OP bipada puxa material, descrição e quantidade desta lista. Formato do arquivo do SAP: colunas <b>Ordem, Material, Quantidade da ordem, Texto breve material</b>. Atualize enviando a planilha nova abaixo — fica guardada no sistema (não se perde no deploy).</p>
+  <div class="field field-full" style="margin-bottom:12px;">
+    <label class="label"><i class="bi bi-upload"></i> Enviar planilha (.xlsx, .csv ou .txt)</label>
+    <div class="flex" style="gap:10px;flex-wrap:wrap;align-items:center;">
+      <input type="file" class="input" id="listaFile" accept=".xlsx,.csv,.txt" style="flex:1 1 300px;">
+      <button class="btn btn-primary btn-sm" id="btnEnviarLista"><i class="bi bi-upload"></i>Enviar e atualizar</button>
+    </div>
+  </div>
+  <details style="margin-bottom:12px;">
+    <summary class="hint" style="cursor:pointer;">Opcional: usar link do SharePoint (se um dia a TI liberar link público)</summary>
+    <div class="flex" style="gap:10px;flex-wrap:wrap;margin-top:8px;">
+      <input class="input" id="listaUrl" placeholder="https://…sharepoint.com/…" style="flex:1 1 300px;">
+      <button class="btn btn-ghost btn-sm" id="btnSalvarUrl">Salvar link</button>
+    </div>
+  </details>
   <div class="flex" style="align-items:center;gap:14px;flex-wrap:wrap;">
     <span id="listaStatus" class="tag tag-slate">Verificando…</span>
-    <button class="btn btn-ghost btn-sm" id="btnRecarregarLista"><i class="bi bi-arrow-clockwise"></i>Recarregar lista</button>
+    <button class="btn btn-ghost btn-sm" id="btnRecarregarLista"><i class="bi bi-arrow-clockwise"></i>Recarregar</button>
   </div>
+</div>
+
+<div class="card card-pad mt">
+  <div class="card-title"><i class="bi bi-stopwatch"></i>Tempos do SAP (validação real × sistema)</div>
+  <p class="hint" style="margin-bottom:12px;">Planilha com o <b>tempo Máquina</b> (min/peça) por peça e centro de trabalho. O sistema compara com o tempo real medido no chão, por peça, para validar os tempos estimados do SAP. Envie a planilha nova abaixo — fica guardada no sistema.</p>
+  <div class="field field-full" style="margin-bottom:12px;">
+    <label class="label"><i class="bi bi-upload"></i> Enviar planilha de tempos (.xlsx ou .csv)</label>
+    <div class="flex" style="gap:10px;flex-wrap:wrap;align-items:center;">
+      <input type="file" class="input" id="temposFile" accept=".xlsx,.csv" style="flex:1 1 300px;">
+      <button class="btn btn-primary btn-sm" id="btnEnviarTempos"><i class="bi bi-upload"></i>Enviar e atualizar</button>
+    </div>
+  </div>
+  <div class="flex" style="align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px;">
+    <span id="temposStatus" class="tag tag-slate">Verificando…</span>
+    <button class="btn btn-ghost btn-sm" id="btnRecarregarTempos"><i class="bi bi-arrow-clockwise"></i>Recarregar</button>
+  </div>
+  <input type="hidden" id="temposUrl">
+  <label class="label">Centro de trabalho do SAP por setor <span class="hint">(qual operação/centro comparar em cada setor)</span></label>
+  <div id="centrosSetor" class="turnos-box"></div>
+  <button class="btn btn-ghost btn-sm mt" id="btnSalvarCentros"><i class="bi bi-check-lg"></i>Salvar centros</button>
 </div>
 
 <div class="card card-pad mt">
@@ -197,15 +231,45 @@ document.getElementById('metaOee').value = META_OEE || '';
 renderTurnos();
 renderSetores(); renderMotivos();
 
-// Lista mestra: status + recarregar
+// Lista mestra: status + upload + recarregar + link opcional
 async function statusLista(){
   const el=document.getElementById('listaStatus');
   try{
     const j=await api('/api/lista_status');
-    if(j.carregada){ el.className='tag tag-green'; el.textContent='Carregada: '+j.total+' OPs ('+(j.arquivo||'')+')'; }
+    if(j.url && document.getElementById('listaUrl') && !document.getElementById('listaUrl').value) document.getElementById('listaUrl').value=j.url;
+    if(j.carregada){
+      const quando = j.quando ? new Date(j.quando).toLocaleString('pt-BR') : '';
+      el.className='tag tag-green';
+      el.textContent='Carregada: '+j.total+' OPs · '+(j.arquivo||'')+(quando?(' · '+quando):'');
+      if(j.erro){ el.className='tag tag-amber'; el.textContent+=' · aviso: '+j.erro; }
+    }
     else{ el.className='tag tag-amber'; el.textContent=(j.erro||'Não carregada'); }
   }catch(e){ el.className='tag tag-slate'; el.textContent='Indisponível'; }
 }
+async function enviarArquivo(url, inputId, btn){
+  const inp=document.getElementById(inputId);
+  if(!inp.files || !inp.files[0]){ toast('Escolha um arquivo','err'); return null; }
+  const fd=new FormData(); fd.append('arquivo', inp.files[0]);
+  btn.disabled=true; const txt=btn.innerHTML; btn.innerHTML='Enviando…';
+  try{
+    const r=await fetch(url,{method:'POST',body:fd});
+    const j=await r.json();
+    if(!r.ok || j.ok===false) throw new Error(j.erro||('Erro '+r.status));
+    return j;
+  }catch(err){ toast(err.message,'err'); return null; }
+  finally{ btn.disabled=false; btn.innerHTML=txt; }
+}
+document.getElementById('btnEnviarLista').addEventListener('click', async(e)=>{
+  const j=await enviarArquivo('/api/admin/lista/upload','listaFile',e.target);
+  if(j){ toast('Lista atualizada: '+j.total+' OPs','ok'); statusLista(); }
+});
+const btnUrl=document.getElementById('btnSalvarUrl');
+if(btnUrl) btnUrl.addEventListener('click', async(e)=>{
+  e.target.disabled=true;
+  try{ await api('/api/admin/config/salvar','POST',{lista_mestra_url:document.getElementById('listaUrl').value.trim()});
+    toast('Link salvo','ok'); await statusLista();
+  }catch(err){ toast(err.message,'err'); } finally{ e.target.disabled=false; }
+});
 document.getElementById('btnRecarregarLista').addEventListener('click', async(e)=>{
   e.target.disabled=true;
   try{ const j=await api('/api/admin/lista/recarregar','POST',{});
@@ -214,5 +278,50 @@ document.getElementById('btnRecarregarLista').addEventListener('click', async(e)
   finally{ e.target.disabled=false; }
 });
 statusLista();
+
+// ── Tempos do SAP ──
+const SETORES_CFG = {{ setores|tojson }};
+async function statusTempos(){
+  const el=document.getElementById('temposStatus');
+  try{
+    const j=await api('/api/tempos_status');
+    if(j.url && !document.getElementById('temposUrl').value) document.getElementById('temposUrl').value=j.url;
+    renderCentros(j.centro_por_setor||{});
+    if(j.carregada){
+      const quando=j.quando?new Date(j.quando).toLocaleString('pt-BR'):'';
+      el.className='tag tag-green';
+      el.textContent='Carregado: '+j.total+' tempos · '+((j.centros||[]).length)+' centros'+(quando?(' · '+quando):'');
+      if(j.erro){ el.className='tag tag-amber'; el.textContent+=' · aviso: '+j.erro; }
+    } else { el.className='tag tag-amber'; el.textContent=(j.erro||'Não carregado'); }
+  }catch(e){ el.className='tag tag-slate'; el.textContent='Indisponível'; }
+}
+function renderCentros(mapa){
+  const box=document.getElementById('centrosSetor');
+  box.innerHTML = SETORES_CFG.map(s=>
+    '<div class="turno-row"><span style="flex:1 1 160px;font-weight:700;">'+esc(s)+'</span>'
+    +'<input class="input" data-setor="'+esc(s)+'" style="max-width:160px;" placeholder="ex.: DO01" value="'+esc(mapa[s]||'')+'"></div>'
+  ).join('');
+}
+document.getElementById('btnEnviarTempos').addEventListener('click', async(e)=>{
+  const j=await enviarArquivo('/api/admin/tempos/upload','temposFile',e.target);
+  if(j){ toast('Tempos atualizados: '+j.total+' tempos','ok'); statusTempos(); }
+});
+document.getElementById('btnRecarregarTempos').addEventListener('click', async(e)=>{
+  e.target.disabled=true;
+  try{ const j=await api('/api/admin/tempos/recarregar','POST',{});
+    toast(j.carregada?('Tempos recarregados: '+j.total):'Falha ao carregar','ok'); statusTempos();
+  }catch(err){ toast(err.message,'err'); } finally{ e.target.disabled=false; }
+});
+document.getElementById('btnSalvarCentros').addEventListener('click', async(e)=>{
+  const mapa={};
+  document.querySelectorAll('#centrosSetor input[data-setor]').forEach(inp=>{
+    if(inp.value.trim()) mapa[inp.dataset.setor]=inp.value.trim();
+  });
+  e.target.disabled=true;
+  try{ await api('/api/admin/config/salvar','POST',{centro_por_setor:mapa});
+    toast('Centros salvos','ok'); statusTempos();
+  }catch(err){ toast(err.message,'err'); } finally{ e.target.disabled=false; }
+});
+statusTempos();
 </script>
 {% endblock %}

@@ -28,13 +28,28 @@ por setor — então o mesmo sistema atende toda a fábrica de forma integrada.
 - **Finalizar** → informa a quantidade produzida e o refugo (a OP e a peça já
   estão cadastradas do início).
 
-### Lista mestra do SAP (mesma do Banho)
-Coloque o arquivo **`lista_mestra.xlsx`** (ou `.csv`/`.txt`) na raiz do
-projeto — mesmo formato do sistema Banho (colunas Ordem, Material, Texto breve,
-Quantidade). O sistema a carrega em memória no startup; a bipagem da OP no final
-usa essa lista. O leitor de código de barras que traz dígitos extras é tratado
-automaticamente (remove 4 no início e 4 no fim). Em `Configurações` há o status
-da lista e um botão para recarregar. O arquivo de exemplo já acompanha o projeto.
+### Lista mestra do SAP e Tempos (validação real × SAP)
+Duas planilhas alimentam o sistema, ambas geridas em `Configurações` (admin):
+
+**Lista mestra de OPs** — formato do SAP com as colunas Ordem, Material,
+Quantidade da ordem e Texto breve material. A bipagem da OP puxa material,
+descrição e quantidade.
+
+**Tempos do SAP** — planilha com o tempo **Máquina** (min/peça) por peça e
+centro de trabalho (colunas Material, Máquina, Centro Trabalho, Texto breve
+operação…). O sistema compara o tempo real medido no chão (tempo produtivo ÷
+quantidade) com esse tempo unitário do SAP, por peça, mostrando o **desvio %**
+na tabela de últimos apontamentos e no Excel — para validar quais tempos
+estimados estão corretos. O centro de cada setor é configurável (Dobra → DO01
+etc.).
+
+Como atualizar: em `Configurações`, use **Enviar planilha** em cada card. O
+arquivo é guardado no banco (persiste entre deploys) e a lista/tempos recarrega
+na hora — sem precisar mexer no GitHub. As planilhas embarcadas
+(`lista_mestra.xlsx`, `tempos_sap.xlsx`) são o ponto de partida. Também é
+possível apontar um link do SharePoint (opcional), caso a TI libere link
+público. O leitor de código de barras com dígitos extras é tratado
+automaticamente (remove 4 no início e 4 no fim).
 
 **Painel gerencial** (`/dashboard`) — **somente visualização**
 - Para os usuários com acesso **Gerencial**. Não edita nada: é um monitor.
