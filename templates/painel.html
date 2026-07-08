@@ -263,8 +263,18 @@ function abrirMaq(id){
 }
 
 // Consulta a OP na lista mestra e preenche código/descrição/qtd prevista.
+// Limpa o código de barras igual ao sistema Banho: tira tudo que não é dígito
+// (caracteres antes/depois da OP) e, se sobrar mais de 8 dígitos, remove 4 do
+// início e 4 do fim.
+function limparOP(bruto){
+  let so=(bruto||'').replace(/\D/g,'');
+  if(so.length>8) so=so.slice(4,-4);
+  return so || (bruto||'').trim();
+}
+
 async function consultarOpIni(){
-  const op=document.getElementById('iniOp').value.trim();
+  const op=limparOP(document.getElementById('iniOp').value);
+  document.getElementById('iniOp').value=op;   // mostra a OP já limpa
   const info=document.getElementById('iniOpInfo');
   if(!op){ info.style.display='none'; return; }
   try{
@@ -322,7 +332,7 @@ function abrirRun(m){
 
 document.getElementById('btnIniciar').addEventListener('click', async (e)=>{
   const id = +e.target.dataset.maq;
-  const op = document.getElementById('iniOp').value.trim();
+  const op = limparOP(document.getElementById('iniOp').value);
   const operador = document.getElementById('iniOperador').value.trim();
   if(!op){ toast('Cadastre a OP','err'); document.getElementById('iniOp').focus(); return; }
   if(!operador){ toast('Informe o operador','err'); return; }
@@ -424,9 +434,7 @@ document.getElementById('btnFinalizar').addEventListener('click', async (e)=>{
 carregar();
 setInterval(tick, 1000);
 setInterval(carregar, 15000);   // ressincroniza com o servidor
-// fecha modal ao clicar no fundo
-document.querySelectorAll('.modal-bg').forEach(bg=>{
-  bg.addEventListener('click', e=>{ if(e.target===bg) bg.classList.remove('show'); });
-});
+// Os modais fecham apenas pelo X ou pelo botão Cancelar/Voltar —
+// clicar no fundo NÃO fecha (evita perder o que estava sendo digitado).
 </script>
 {% endblock %}

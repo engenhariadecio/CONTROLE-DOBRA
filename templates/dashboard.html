@@ -376,16 +376,19 @@ function tagDesvio(v){
 function tabelaUltimos(rows){
   if(!rows || !rows.length) return '<div class="empty"><i class="bi bi-inbox"></i><p>Nenhum apontamento finalizado no período.</p></div>';
   return '<div class="tabela-wrap"><table class="tbl"><thead><tr>'
-    +'<th>Início</th><th>Turno</th><th>Máquina</th><th>OP</th><th>Peça</th><th>Operador</th><th class="td-num">Prod.</th>'
-    +'<th class="td-num">T. real/pç</th><th class="td-num">T. SAP/pç</th><th class="td-num">Desvio</th>'
-    +'<th class="td-num">Pçs/h</th><th class="td-num">OEE</th></tr></thead><tbody>'
-    + rows.map(r=>'<tr><td class="nowrap">'+esc(r.inicio)+'</td><td>'+esc(r.turno||'—')+'</td><td>'+esc(r.maquina_nome)+'</td>'
-      +'<td><b>'+esc(r.op)+'</b></td><td>'+esc(r.descricao||r.codigo||'—')+'</td><td>'+esc(r.operador_nome)+'</td>'
+    +'<th>Início</th><th>Máquina</th><th>OP</th><th>Peça</th><th class="td-num">Prod.</th>'
+    +'<th class="td-num">T. real OP</th><th class="td-num">T. real/pç</th>'
+    +'<th class="td-num">T. SAP/pç</th><th class="td-num">T. SAP OP</th><th class="td-num">Desvio</th>'
+    +'<th class="td-num">OEE</th></tr></thead><tbody>'
+    + rows.map(r=>'<tr><td class="nowrap">'+esc(r.inicio)+'</td><td>'+esc(r.maquina_nome)+'</td>'
+      +'<td><b>'+esc(r.op)+'</b></td><td>'+esc(r.descricao||r.codigo||'—')+'</td>'
       +'<td class="td-num">'+fmt(r.quantidade_produzida)+'</td>'
+      +'<td class="td-num mono">'+tempoMin(r.tempo_real_total)+'</td>'
       +'<td class="td-num mono">'+tempoMin(r.tempo_real_unit)+'</td>'
       +'<td class="td-num mono">'+tempoMin(r.tempo_sap_unit)+'</td>'
+      +'<td class="td-num mono">'+tempoMin(r.tempo_sap_total)+'</td>'
       +'<td class="td-num">'+tagDesvio(r.desvio_pct)+'</td>'
-      +'<td class="td-num">'+r.pph+'</td><td class="td-num">'+tagOee(r.oee)+'</td>'
+      +'<td class="td-num">'+tagOee(r.oee)+'</td>'
       +'</tr>').join('')
     + '</tbody></table></div>';
 }

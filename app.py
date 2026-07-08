@@ -1868,16 +1868,25 @@ def api_dashboard():
 
 
 def _ultimo_com_tempos(a, agora, meta_padrao):
-    """to_dict do apontamento + comparação tempo real × tempo SAP (min/peça)."""
+    """to_dict + comparação tempo real × tempo SAP.
+    - tempo_real_unit = tempo total da OP ÷ total de peças (min/peça)
+    - tempo_sap_unit  = tempo Máquina do SAP (min/peça)
+    - tempo_sap_total = tempo SAP unitário × total de peças (min da OP)
+    - tempo_real_total = tempo produtivo total da OP (min)
+    - desvio_pct = (real − SAP) ÷ SAP  (vale igual no unitário e no total)
+    """
     d = a.to_dict(agora, meta_padrao)
-    real = None
-    if a.quantidade_produzida and a.producao_seg:
-        real = (a.producao_seg / 60.0) / a.quantidade_produzida   # min/peça
-    sap = tempo_sap_unitario(a.codigo, a.setor)
-    d['tempo_real_unit'] = round(real, 3) if real is not None else None
-    d['tempo_sap_unit'] = round(sap, 3) if sap is not None else None
-    if real and sap and sap > 0:
-        d['desvio_pct'] = round((real - sap) / sap * 100, 1)   # + = real acima do SAP
+    qtd = a.quantidade_produzida or 0
+    real_total = (a.producao_seg or 0) / 60.0 if a.producao_seg else None   # min da OP
+    real_unit = (real_total / qtd) if (real_total and qtd) else None
+    sap_unit = tempo_sap_unitario(a.codigo, a.setor)
+    sap_total = (sap_unit * qtd) if (sap_unit is not None and qtd) else None
+    d['tempo_real_total'] = round(real_total, 2) if real_total is not None else None
+    d['tempo_real_unit'] = round(real_unit, 3) if real_unit is not None else None
+    d['tempo_sap_unit'] = round(sap_unit, 3) if sap_unit is not None else None
+    d['tempo_sap_total'] = round(sap_total, 2) if sap_total is not None else None
+    if real_unit and sap_unit and sap_unit > 0:
+        d['desvio_pct'] = round((real_unit - sap_unit) / sap_unit * 100, 1)
     else:
         d['desvio_pct'] = None
     return d
@@ -2131,9 +2140,21 @@ def _seg_hms(seg):
 
 
 def _tempo_real_unit(a):
-    """Tempo real por peça (min/peça) do apontamento, ou '' se não der."""
+    """Tempo real por peça (min/peça) = tempo total da OP ÷ total de peças."""
     if a.quantidade_produzida and a.producao_seg:
         return round((a.producao_seg / 60.0) / a.quantidade_produzida, 3)
+    return ''
+
+
+def _tempo_real_total_min(a):
+    return round((a.producao_seg or 0) / 60.0, 2) if a.producao_seg else ''
+
+
+def _tempo_sap_total(a):
+    """Tempo SAP total da OP = tempo SAP unitário × total de peças."""
+    sap = tempo_sap_unitario(a.codigo, a.setor)
+    if sap is not None and a.quantidade_produzida:
+        return round(sap * a.quantidade_produzida, 2)
     return ''
 
 
@@ -2180,7 +2201,7 @@ def download_apontamentos():
                 'Descrição', 'Qtd prevista', 'Qtd produzida', 'Refugo',
                 'Início', 'Fim', 'Tempo produtivo', 'Pausa total',
                 'Nº pausas', 'Meta pç/h', 'Peças/hora',
-                'T. real min/pç', 'T. SAP min/pç', 'Desvio %',
+                'T. real OP min', 'T. real min/pç', 'T. SAP min/pç', 'T. SAP OP min', 'Desvio %',
                 'Disponibilidade %', 'Desempenho %', 'Qualidade %', 'OEE %',
                 'Observação']
         ws.append(cols)
@@ -2211,14 +2232,15 @@ def download_apontamentos():
                 fimloc.strftime('%H:%M:%S') if fimloc else '',
                 _seg_hms(prod), _seg_hms(a.pausa_total_seg()),
                 len(a._pausas()), round(a.meta_efetiva(meta_padrao), 2), pph,
-                _tempo_real_unit(a), _pex(tempo_sap_unitario(a.codigo, a.setor)),
+                _tempo_real_total_min(a), _tempo_real_unit(a),
+                _pex(tempo_sap_unitario(a.codigo, a.setor)), _tempo_sap_total(a),
                 _desvio_unit(a),
                 _pex(_pct(o['disponibilidade'])), _pex(_pct(o['desempenho'])),
                 _pex(_pct(o['qualidade'])), _pex(_pct(o['oee'])),
                 a.observacao or '',
             ])
         larguras = [12, 10, 14, 16, 20, 12, 12, 14, 30, 12, 13, 10, 10, 10, 15, 13,
-                    10, 10, 11, 13, 13, 10, 16, 15, 14, 10, 30]
+                    10, 10, 11, 13, 13, 13, 13, 10, 16, 15, 14, 10, 30]
         for i, w in enumerate(larguras, 1):
             ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w
         ws.freeze_panes = 'A2'
