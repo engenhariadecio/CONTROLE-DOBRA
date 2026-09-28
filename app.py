@@ -21,6 +21,8 @@ import os
 import io
 import csv
 import json
+import hashlib
+import mimetypes
 import threading
 from datetime import datetime, timedelta, date as ddate
 from functools import wraps
@@ -111,15 +113,24 @@ def _norm_cod(v):
 
 
 def _ler_arquivo_dados(nome):
-    """Bytes de uma planilha enviada pelo admin (guardada no banco), ou None."""
+    """Planilha em uso de um tipo ('lista_mestra' | 'tempos_sap'), guardada no
+    banco: devolve (bytes, nome_original, versao_id) ou None.
+    Prioridade: versão ATIVA do histórico (última válida); senão o registro
+    legado da tabela arquivos_dados (bases anteriores ao histórico)."""
     try:
         db = Session()
     except Exception:  # noqa: BLE001
         return None
     try:
+        v = (db.query(ArquivoVersao)
+             .filter(ArquivoVersao.tipo == nome, ArquivoVersao.ativo.is_(True))
+             .order_by(ArquivoVersao.importado_em.desc(), ArquivoVersao.id.desc())
+             .first())
+        if v and v.conteudo:
+            return bytes(v.conteudo), (v.arquivo or nome), v.id
         a = db.query(ArquivoDados).filter_by(nome=nome).first()
         if a and a.conteudo:
-            return bytes(a.conteudo), (a.arquivo or nome)
+            return bytes(a.conteudo), (a.arquivo or nome), None
         return None
     except Exception:  # noqa: BLE001
         return None
@@ -130,19 +141,71 @@ def _ler_arquivo_dados(nome):
             pass
 
 
-def _salvar_arquivo_dados(nome, arquivo, conteudo):
+# Quantas versões manter por tipo de arquivo (a ativa nunca é apagada).
+ARQUIVOS_VERSOES_MAX = max(1, int(os.environ.get('ARQUIVOS_VERSOES_MAX', '10') or 10))
+
+
+def _registrar_versao(tipo, arquivo, conteudo, registros, origem, usuario=''):
+    """Guarda o arquivo ORIGINAL (já validado) como nova versão e a marca como
+    a versão em uso. Conteúdo idêntico (mesmo SHA-256) reaproveita a versão já
+    guardada em vez de duplicar. Devolve o id da versão ativa."""
+    sha = hashlib.sha256(conteudo).hexdigest()
+    agora = datetime.utcnow()
     db = Session()
     try:
-        a = db.query(ArquivoDados).filter_by(nome=nome).first() or ArquivoDados(nome=nome)
-        if not a.id:
-            db.add(a)
-        a.arquivo = arquivo
-        a.conteudo = conteudo
-        a.tamanho = len(conteudo)
-        a.atualizado_em = datetime.utcnow()
+        v = (db.query(ArquivoVersao)
+             .filter(ArquivoVersao.tipo == tipo, ArquivoVersao.sha256 == sha)
+             .order_by(ArquivoVersao.id.desc()).first())
+        if v and v.ativo and origem == 'url':
+            # SharePoint sem mudança: nada novo foi importado.
+            return v.id
+        if v:
+            v.importado_em = agora
+            v.arquivo = arquivo or v.arquivo
+            v.registros = int(registros or 0)
+            v.origem = origem
+            v.usuario = usuario or ''
+        else:
+            v = ArquivoVersao(tipo=tipo, arquivo=arquivo or tipo, conteudo=conteudo,
+                              tamanho=len(conteudo), sha256=sha,
+                              registros=int(registros or 0), origem=origem,
+                              usuario=usuario or '', importado_em=agora)
+            db.add(v)
+            db.flush()
+        (db.query(ArquivoVersao)
+         .filter(ArquivoVersao.tipo == tipo, ArquivoVersao.id != v.id)
+         .update({ArquivoVersao.ativo: False}, synchronize_session=False))
+        v.ativo = True
+        # Retenção: mantém as N versões mais recentes.
+        ids = [r[0] for r in (db.query(ArquivoVersao.id)
+                              .filter(ArquivoVersao.tipo == tipo)
+                              .order_by(ArquivoVersao.importado_em.desc(),
+                                        ArquivoVersao.id.desc()).all())]
+        antigos = [i for i in ids[ARQUIVOS_VERSOES_MAX:] if i != v.id]
+        if antigos:
+            (db.query(ArquivoVersao).filter(ArquivoVersao.id.in_(antigos))
+             .delete(synchronize_session=False))
         db.commit()
+        return v.id
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
+
+
+def _registrar_versao_seguro(*a, **k):
+    """Como _registrar_versao, mas nunca derruba o carregamento dos dados."""
+    try:
+        return _registrar_versao(*a, **k)
+    except Exception as e:  # noqa: BLE001
+        print(f'[arquivos] não consegui guardar a versão: {e}')
+        return None
+
+
+def _salvar_arquivo_dados(nome, arquivo, conteudo, registros=0, usuario=''):
+    """Envio feito pelo admin: vira a nova versão em uso."""
+    return _registrar_versao(nome, arquivo, conteudo, registros, 'upload', usuario)
 
 
 def _linhas_de_bytes(dados, obrigatorias=None):
@@ -275,8 +338,8 @@ def _url_download_sharepoint(url):
     return u
 
 
-def _baixar_lista_url(url):
-    """Baixa a planilha da URL (SharePoint) e devolve (linhas, rotulo)."""
+def _baixar_bytes_url(url):
+    """Baixa o arquivo da URL (SharePoint) e devolve os bytes originais."""
     import urllib.request
     req = urllib.request.Request(
         _url_download_sharepoint(url),
@@ -285,17 +348,32 @@ def _baixar_lista_url(url):
         dados = resp.read()
     if not dados:
         raise ValueError('resposta vazia da URL')
+    if dados[:2] != b'PK':
+        raw = dados[:200].decode('utf-8-sig', errors='replace').lstrip().lower()
+        if raw.startswith('<!doctype') or raw.startswith('<html'):
+            raise ValueError('a URL devolveu uma página de login — o link precisa ser '
+                             'de compartilhamento "Qualquer pessoa com o link".')
+    return dados
+
+
+def _nome_arquivo_url(url, dados, tipo):
+    """Nome amigável para o arquivo baixado do SharePoint."""
+    from urllib.parse import urlparse, unquote
+    base = unquote(os.path.basename(urlparse(url or '').path or ''))
+    if base and '.' in base and len(base) <= 150:
+        return base
+    return f'{tipo}_sharepoint.' + ('xlsx' if dados[:2] == b'PK' else 'csv')
+
+
+def _baixar_lista_url(url):
+    """Baixa a planilha da URL (SharePoint) e devolve (linhas, rotulo, bytes)."""
+    dados = _baixar_bytes_url(url)
     # xlsx é um zip (PK); senão, trata como texto csv/txt
     if dados[:2] == b'PK':
         linhas, aba = _linhas_do_xlsx(io.BytesIO(dados))
-        return linhas, f'SharePoint · aba "{aba}"'
-    raw = dados.decode('utf-8-sig', errors='replace')
-    if raw.lstrip()[:15].lower().startswith('<!doctype') or raw.lstrip()[:6].lower() == '<html>':
-        raise ValueError('a URL devolveu uma página de login — o link precisa ser '
-                         'de compartilhamento "Qualquer pessoa com o link".')
-    sep = '\t' if raw.count('\t') > raw.count(';') and raw.count('\t') > raw.count(',') \
-        else (';' if raw.count(';') > raw.count(',') else ',')
-    return list(csv.reader(io.StringIO(raw), delimiter=sep)), 'SharePoint · csv'
+        return linhas, f'SharePoint · aba "{aba}"', dados
+    linhas, _r = _linhas_de_bytes(dados)
+    return linhas, 'SharePoint · csv', dados
 
 
 def get_lista_mestra_url():
@@ -314,14 +392,18 @@ def carregar_lista_mestre():
     url = get_lista_mestra_url()
     if url:
         try:
-            linhas, rotulo = _baixar_lista_url(url)
+            linhas, rotulo, dados = _baixar_lista_url(url)
             por_ordem = _parsear_linhas_mestre(linhas)
             if not por_ordem:
                 raise ValueError('nenhuma OP encontrada na planilha baixada')
+            nome_arq = _nome_arquivo_url(url, dados, 'lista_mestra')
+            vid = _registrar_versao_seguro('lista_mestra', nome_arq, dados,
+                                           len(por_ordem), 'url')
             with _lista_lock:
                 _lista_por_ordem = por_ordem
                 _lista_status = {'carregada': True, 'total': len(por_ordem),
                                  'arquivo': rotulo, 'fonte': 'url', 'erro': None,
+                                 'arquivo_nome': nome_arq, 'versao_id': vid,
                                  'quando': datetime.utcnow().isoformat() + 'Z'}
             print(f'[lista_mestra] {len(por_ordem)} ordens carregadas do SharePoint.')
             return
@@ -346,6 +428,7 @@ def carregar_lista_mestre():
                     _lista_por_ordem = por_ordem
                     _lista_status = {'carregada': True, 'total': len(por_ordem),
                                      'arquivo': f'enviado · {blob[1]}', 'fonte': 'upload',
+                                     'arquivo_nome': blob[1], 'versao_id': blob[2],
                                      'erro': None, 'quando': datetime.utcnow().isoformat() + 'Z'}
                 print(f'[lista_mestra] {len(por_ordem)} ordens do arquivo enviado ({blob[1]}).')
                 return
@@ -373,6 +456,7 @@ def carregar_lista_mestre():
             _lista_por_ordem = por_ordem
             _lista_status = {'carregada': True, 'total': len(por_ordem),
                              'arquivo': os.path.basename(caminho), 'fonte': 'arquivo',
+                             'arquivo_nome': os.path.basename(caminho), 'caminho': caminho,
                              'erro': None, 'quando': datetime.utcnow().isoformat() + 'Z'}
         print(f'[lista_mestra] Carregada: {len(por_ordem)} ordens de "{os.path.basename(caminho)}".')
     except Exception as e:  # noqa: BLE001
@@ -407,20 +491,94 @@ def _achar_arquivo(nomes):
     return None
 
 
+def _parsear_tempos(linhas):
+    """Interpreta as linhas da planilha de tempos. Devolve (tempos, descs):
+    tempos = { 'CENTRO': { 'codigo': {'min', 'op', 'desc'} } }
+    descs  = { 'codigo': 'Texto breve material' }"""
+    def norm(s):
+        return str(s).strip().lower() if s is not None else ''
+    cab_i, col = None, {}
+    for i, row in enumerate(linhas[:8]):
+        m = {}
+        for j, nome in enumerate(norm(c) for c in (row or [])):
+            if nome == 'material':
+                m['mat'] = j
+            elif nome == 'máquina' or nome == 'maquina':
+                m['maq'] = j
+            elif nome == 'centro trabalho' or nome == 'centro de trabalho':
+                m['centro'] = j
+            elif nome == 'texto breve operação' or nome == 'texto breve operacao':
+                m['op'] = j
+            elif nome == 'texto breve material':
+                m['desc'] = j
+        if 'mat' in m and 'maq' in m:
+            cab_i, col = i, m
+            break
+    if cab_i is None:
+        raise ValueError('não encontrei as colunas Material e Máquina na planilha de tempos.')
+
+    tempos = {}
+    descs = {}
+    for row in linhas[cab_i + 1:]:
+        if not row:
+            continue
+
+        def val(k):
+            j = col.get(k)
+            return row[j] if j is not None and j < len(row) else None
+        cod = _norm_cod(val('mat'))
+        t = val('maq')
+        if isinstance(t, str):   # csv: número vem como texto (aceita vírgula)
+            try:
+                t = float(t.strip().replace(',', '.'))
+            except ValueError:
+                t = None
+        if not cod or not isinstance(t, (int, float)) or t <= 0:
+            if cod and val('desc') and cod not in descs:
+                descs[cod] = str(val('desc')).strip()
+            continue
+        centro = (str(val('centro')).strip() if val('centro') else '') or '—'
+        op = str(val('op')).strip() if val('op') else ''
+        desc = str(val('desc')).strip() if val('desc') else ''
+        if desc and cod not in descs:
+            descs[cod] = desc
+        porcentro = tempos.setdefault(centro, {})
+        # mantém o menor tempo quando a peça repete a mesma operação/centro
+        if cod not in porcentro or float(t) < porcentro[cod]['min']:
+            porcentro[cod] = {'min': float(t), 'op': op, 'desc': desc}
+    return tempos, descs
+
+
+def _total_tempos(tempos):
+    return sum(len(v) for v in tempos.values())
+
+
 def carregar_tempos_sap():
     """Carrega a planilha de tempos do SAP e indexa o tempo Máquina (min/peça)
     por centro de trabalho e por código de material."""
     global _tempos, _tempos_desc, _tempos_status
     url = (cfg_get('tempos_url', '') if _config_pronto() else '') or os.environ.get('TEMPOS_URL', '')
     url = (url or '').strip()
+    obrig = ('material', 'máquina')
     try:
+        extra = {}
         if url:
-            linhas, rotulo = _baixar_lista_url(url)
+            dados = _baixar_bytes_url(url)
+            linhas, _aba = _linhas_de_bytes(dados, obrigatorias=obrig)
+            tempos, descs = _parsear_tempos(linhas)
+            if not tempos:
+                raise ValueError('nenhum tempo válido na planilha baixada')
+            nome_arq = _nome_arquivo_url(url, dados, 'tempos_sap')
+            vid = _registrar_versao_seguro('tempos_sap', nome_arq, dados,
+                                           _total_tempos(tempos), 'url')
+            rotulo = 'SharePoint'
+            extra = {'fonte': 'url', 'arquivo_nome': nome_arq, 'versao_id': vid}
         else:
             blob = _ler_arquivo_dados('tempos_sap')
             if blob:
-                linhas, _aba = _linhas_de_bytes(blob[0], obrigatorias=('material', 'máquina'))
+                linhas, _aba = _linhas_de_bytes(blob[0], obrigatorias=obrig)
                 rotulo = f'enviado · {blob[1]}'
+                extra = {'fonte': 'upload', 'arquivo_nome': blob[1], 'versao_id': blob[2]}
             else:
                 caminho = _achar_arquivo(TEMPOS_ARQUIVOS)
                 if not caminho:
@@ -435,66 +593,19 @@ def carregar_tempos_sap():
                     sep = ';' if raw.count(';') > raw.count(',') else ','
                     linhas = list(csv.reader(io.StringIO(raw), delimiter=sep))
                 else:
-                    linhas, _aba = _linhas_do_xlsx_por_colunas(
-                        caminho, obrigatorias=('material', 'máquina'))
+                    linhas, _aba = _linhas_do_xlsx_por_colunas(caminho, obrigatorias=obrig)
                 rotulo = os.path.basename(caminho)
+                extra = {'fonte': 'arquivo', 'arquivo_nome': rotulo, 'caminho': caminho}
+            tempos, descs = _parsear_tempos(linhas)
 
-        # localizar colunas
-        def norm(s):
-            return str(s).strip().lower() if s is not None else ''
-        cab_i, col = None, {}
-        for i, row in enumerate(linhas[:8]):
-            m = {}
-            for j, nome in enumerate(norm(c) for c in row):
-                if nome == 'material':
-                    m['mat'] = j
-                elif nome == 'máquina' or nome == 'maquina':
-                    m['maq'] = j
-                elif nome == 'centro trabalho' or nome == 'centro de trabalho':
-                    m['centro'] = j
-                elif nome == 'texto breve operação' or nome == 'texto breve operacao':
-                    m['op'] = j
-                elif nome == 'texto breve material':
-                    m['desc'] = j
-            if 'mat' in m and 'maq' in m:
-                cab_i, col = i, m
-                break
-        if cab_i is None:
-            raise ValueError('não encontrei as colunas Material e Máquina na planilha de tempos.')
-
-        tempos = {}
-        descs = {}
-        total = 0
-        for row in linhas[cab_i + 1:]:
-            if not row:
-                continue
-            def val(k):
-                j = col.get(k)
-                return row[j] if j is not None and j < len(row) else None
-            cod = _norm_cod(val('mat'))
-            t = val('maq')
-            if not cod or not isinstance(t, (int, float)) or t <= 0:
-                if cod and val('desc') and cod not in descs:
-                    descs[cod] = str(val('desc')).strip()
-                continue
-            centro = (str(val('centro')).strip() if val('centro') else '') or '—'
-            op = str(val('op')).strip() if val('op') else ''
-            desc = str(val('desc')).strip() if val('desc') else ''
-            if desc and cod not in descs:
-                descs[cod] = desc
-            porcentro = tempos.setdefault(centro, {})
-            # mantém o menor tempo quando a peça repete a mesma operação/centro
-            if cod not in porcentro or float(t) < porcentro[cod]['min']:
-                porcentro[cod] = {'min': float(t), 'op': op, 'desc': desc}
-                total += 1
+        total = _total_tempos(tempos)
         with _tempos_lock:
             _tempos = tempos
             _tempos_desc = descs
-            _tempos_status = {'carregada': True, 'total': sum(len(v) for v in tempos.values()),
+            _tempos_status = {'carregada': True, 'total': total,
                               'centros': sorted(tempos.keys()), 'arquivo': rotulo, 'erro': None,
-                              'quando': datetime.utcnow().isoformat() + 'Z'}
-        print(f'[tempos_sap] Carregado: {sum(len(v) for v in tempos.values())} tempos '
-              f'em {len(tempos)} centros de "{rotulo}".')
+                              'quando': datetime.utcnow().isoformat() + 'Z', **extra}
+        print(f'[tempos_sap] Carregado: {total} tempos em {len(tempos)} centros de "{rotulo}".')
     except Exception as e:  # noqa: BLE001
         with _tempos_lock:
             if not _tempos_status.get('carregada'):
@@ -835,6 +946,24 @@ class ArquivoDados(Base):
     atualizado_em = Column(DateTime, default=datetime.utcnow)
 
 
+class ArquivoVersao(Base):
+    """Histórico das planilhas importadas (lista mestra, tempos do SAP).
+    Guarda o arquivo ORIGINAL de cada importação válida; a versão com
+    ativo=True é a que o sistema usa (última válida)."""
+    __tablename__ = 'arquivos_versoes'
+    id = Column(Integer, primary_key=True)
+    tipo = Column(String(40), index=True)                 # 'lista_mestra' | 'tempos_sap'
+    arquivo = Column(String(200), default='')             # nome original
+    conteudo = Column(LargeBinary)                        # bytes originais (xlsx/csv/txt)
+    tamanho = Column(Integer, default=0)
+    sha256 = Column(String(64), index=True, default='')
+    registros = Column(Integer, default=0)                # registros válidos processados
+    origem = Column(String(20), default='upload')         # upload | url | legado
+    usuario = Column(String(120), default='')
+    importado_em = Column(DateTime, default=datetime.utcnow)
+    ativo = Column(Boolean, default=False)                # versão em uso pelo sistema
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Configurações do sistema (setores, motivos de pausa, setor ativo)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -986,9 +1115,52 @@ def _garantir_colunas():
                     print(f'[migracao] {tabela}.{col}: {e}')
 
 
+def _migrar_arquivos_legados():
+    """Bases anteriores guardavam só 1 arquivo por tipo (tabela arquivos_dados).
+    Na primeira execução, esse arquivo vira a versão 1 do histórico."""
+    db = Session()
+    try:
+        legados = db.query(ArquivoDados).all()
+        pendentes = []
+        for a in legados:
+            if not a.conteudo:
+                continue
+            if db.query(ArquivoVersao.id).filter(ArquivoVersao.tipo == a.nome).first():
+                continue
+            pendentes.append((a.nome, a.arquivo or a.nome, bytes(a.conteudo),
+                              a.atualizado_em or datetime.utcnow()))
+    finally:
+        db.close()
+    for tipo, arquivo, dados, quando in pendentes:
+        registros = 0
+        try:
+            if tipo == 'lista_mestra':
+                registros = len(_parsear_linhas_mestre(_linhas_de_bytes(dados)[0]))
+            elif tipo == 'tempos_sap':
+                linhas = _linhas_de_bytes(dados, obrigatorias=('material', 'máquina'))[0]
+                registros = _total_tempos(_parsear_tempos(linhas)[0])
+        except Exception as e:  # noqa: BLE001
+            print(f'[migracao] {tipo}: não consegui contar registros: {e}')
+        db = Session()
+        try:
+            db.add(ArquivoVersao(tipo=tipo, arquivo=arquivo, conteudo=dados,
+                                 tamanho=len(dados),
+                                 sha256=hashlib.sha256(dados).hexdigest(),
+                                 registros=registros, origem='legado',
+                                 importado_em=quando, ativo=True))
+            db.commit()
+            print(f'[migracao] {tipo}: arquivo "{arquivo}" movido para o histórico de versões.')
+        finally:
+            db.close()
+
+
 def bootstrap():
     Base.metadata.create_all(engine)
     _garantir_colunas()
+    try:
+        _migrar_arquivos_legados()
+    except Exception as e:  # noqa: BLE001
+        print('[migracao] arquivos legados:', e)
     db = Session()
     try:
         # Admin padrão
@@ -1084,6 +1256,46 @@ except Exception as e:  # noqa: BLE001
 @app.teardown_appcontext
 def _remove_session(exc=None):
     Session.remove()
+
+
+# Com vários workers (gunicorn --workers 2), um envio recarrega só o worker que
+# recebeu a requisição. Cada worker confere aqui (no máx. a cada 30 s) se a
+# versão ATIVA no banco mudou e, se sim, recarrega em segundo plano — assim
+# operador, meta, OEE e Painel Gerencial usam todos a mesma versão.
+_sync_intervalo = 30
+_sync_ultimo = 0.0
+_sync_tentado = {}
+_sync_lock = threading.Lock()
+
+
+@app.before_request
+def _sincronizar_arquivos():
+    global _sync_ultimo
+    import time
+    agora = time.monotonic()
+    if agora - _sync_ultimo < _sync_intervalo or not _sync_lock.acquire(blocking=False):
+        return
+    try:
+        _sync_ultimo = agora
+        db = Session()
+        try:
+            ativos = dict(db.query(ArquivoVersao.tipo, ArquivoVersao.id)
+                          .filter(ArquivoVersao.ativo.is_(True)).all())
+        finally:
+            db.close()
+        for tipo, carregar in (('lista_mestra', carregar_lista_mestre),
+                               ('tempos_sap', carregar_tempos_sap)):
+            vid = ativos.get(tipo)
+            st = _status_memoria(tipo)
+            if (vid and st.get('fonte') != 'url' and st.get('versao_id') != vid
+                    and _sync_tentado.get(tipo) != vid):
+                _sync_tentado[tipo] = vid   # tenta 1x por versão nova
+                print(f'[arquivos] {tipo}: versão {vid} ativa no banco — recarregando neste worker.')
+                threading.Thread(target=carregar, daemon=True).start()
+    except Exception as e:  # noqa: BLE001
+        print('[arquivos] sincronização:', e)
+    finally:
+        _sync_lock.release()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1367,6 +1579,7 @@ def api_buscar_codigo(codigo):
 def api_lista_status():
     with _lista_lock:
         st = dict(_lista_status)
+    st.pop('caminho', None)
     st['url'] = get_lista_mestra_url()
     st['auto_min'] = LISTA_AUTO_MINUTOS
     return jsonify(st)
@@ -1377,7 +1590,8 @@ def api_lista_status():
 def api_lista_recarregar():
     carregar_lista_mestre()
     with _lista_lock:
-        return jsonify({'ok': True, **_lista_status})
+        st = {k: v for k, v in _lista_status.items() if k != 'caminho'}
+    return jsonify({'ok': True, **st})
 
 
 @app.route('/api/tempos_status')
@@ -1385,6 +1599,7 @@ def api_lista_recarregar():
 def api_tempos_status():
     with _tempos_lock:
         st = dict(_tempos_status)
+    st.pop('caminho', None)
     try:
         st['url'] = (cfg_get('tempos_url', '') or os.environ.get('TEMPOS_URL', '')).strip()
     except Exception:  # noqa: BLE001
@@ -1398,7 +1613,8 @@ def api_tempos_status():
 def api_tempos_recarregar():
     carregar_tempos_sap()
     with _tempos_lock:
-        return jsonify({'ok': True, **_tempos_status})
+        st = {k: v for k, v in _tempos_status.items() if k != 'caminho'}
+    return jsonify({'ok': True, **st})
 
 
 @app.route('/api/admin/lista/upload', methods=['POST'])
@@ -1417,10 +1633,12 @@ def api_lista_upload():
             return jsonify({'ok': False, 'erro': 'Não encontrei OPs (colunas Ordem e Material) no arquivo.'}), 400
     except Exception as e:  # noqa: BLE001
         return jsonify({'ok': False, 'erro': f'Não consegui ler o arquivo: {e}'}), 400
-    _salvar_arquivo_dados('lista_mestra', f.filename, dados)
+    _salvar_arquivo_dados('lista_mestra', os.path.basename(f.filename), dados,
+                          registros=len(por), usuario=_usuario_atual())
     carregar_lista_mestre()
     with _lista_lock:
-        return jsonify({'ok': True, **_lista_status})
+        st = {k: v for k, v in _lista_status.items() if k != 'caminho'}
+    return jsonify({'ok': True, **st})
 
 
 @app.route('/api/admin/tempos/upload', methods=['POST'])
@@ -1440,12 +1658,314 @@ def api_tempos_upload():
         if 'material' not in cabs or not ({'máquina', 'maquina'} & cabs):
             return jsonify({'ok': False, 'erro': 'A planilha de tempos precisa ter as colunas '
                                                  '"Material" e "Máquina".'}), 400
+        tempos, _d = _parsear_tempos(linhas)
+        total = _total_tempos(tempos)
+        if not total:
+            return jsonify({'ok': False, 'erro': 'Nenhum tempo válido (coluna "Máquina" > 0) '
+                                                 'foi encontrado na planilha.'}), 400
     except Exception as e:  # noqa: BLE001
         return jsonify({'ok': False, 'erro': f'Não consegui ler o arquivo: {e}'}), 400
-    _salvar_arquivo_dados('tempos_sap', f.filename, dados)
+    _salvar_arquivo_dados('tempos_sap', os.path.basename(f.filename), dados,
+                          registros=total, usuario=_usuario_atual())
     carregar_tempos_sap()
     with _tempos_lock:
-        return jsonify({'ok': True, **_tempos_status})
+        st = {k: v for k, v in _tempos_status.items() if k != 'caminho'}
+    return jsonify({'ok': True, **st})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Arquivos do sistema (Configurações) — consulta e download SOMENTE LEITURA.
+# Nada aqui grava no banco nem recarrega a lista/tempos: apenas lê a versão em
+# uso (ou uma versão do histórico) e devolve o arquivo. O cálculo de meta,
+# OEE e o Painel Gerencial continuam usando exatamente os mesmos dados.
+# ─────────────────────────────────────────────────────────────────────────────
+ARQUIVOS_SISTEMA = {
+    'lista_mestra': {'rotulo': 'Lista Mestra', 'unidade': 'OPs',
+                     'vazio': 'Arquivo Lista Mestra ainda não foi importado.'},
+    'tempos_sap': {'rotulo': 'Tempos do SAP', 'unidade': 'tempos',
+                   'vazio': 'Arquivo de Tempos do SAP ainda não foi importado.'},
+}
+ORIGEM_ROTULO = {
+    'upload': 'Enviado em Configurações',
+    'legado': 'Enviado em Configurações',
+    'url': 'Link do SharePoint',
+    'arquivo': 'Arquivo inicial do sistema',
+}
+XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+
+def _usuario_atual():
+    return (session.get('nome') or session.get('usuario') or '').strip()
+
+
+def _fmt_local(dt):
+    if not dt:
+        return ''
+    return (dt - timedelta(hours=FUSO_LOCAL_HORAS)).strftime('%d/%m/%Y %H:%M')
+
+
+def _dt_de_iso(s):
+    try:
+        return datetime.fromisoformat(str(s).replace('Z', '')) if s else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _status_memoria(tipo):
+    """Cópia do status dos dados em uso (não altera nada)."""
+    if tipo == 'lista_mestra':
+        with _lista_lock:
+            return dict(_lista_status)
+    with _tempos_lock:
+        return dict(_tempos_status)
+
+
+def _versoes_meta(db, tipo):
+    """Metadados das versões guardadas (sem carregar o conteúdo binário)."""
+    V = ArquivoVersao
+    return (db.query(V.id, V.arquivo, V.tamanho, V.registros, V.origem,
+                     V.usuario, V.importado_em, V.ativo)
+            .filter(V.tipo == tipo)
+            .order_by(V.importado_em.desc(), V.id.desc()).all())
+
+
+def _fonte_atual(db, tipo, st, versoes):
+    """Descobre onde está o arquivo ORIGINAL dos dados em uso.
+    Devolve {'kind': 'versao'|'disco'|'legado', ...} ou None (só há dados processados)."""
+    por_id = {v.id: v for v in versoes}
+    ativa = next((v for v in versoes if v.ativo), None)
+    if st.get('carregada'):
+        fonte = st.get('fonte')
+        if fonte in ('upload', 'url'):
+            vid = st.get('versao_id')
+            if vid and vid in por_id:
+                return {'kind': 'versao', 'v': por_id[vid]}
+            if fonte == 'upload' and vid is None:
+                a = db.query(ArquivoDados.arquivo, ArquivoDados.tamanho,
+                             ArquivoDados.atualizado_em).filter_by(nome=tipo).first()
+                if a:
+                    return {'kind': 'legado', 'a': a}
+            return None
+        if fonte == 'arquivo':
+            caminho = st.get('caminho')
+            if caminho and os.path.isfile(caminho):
+                return {'kind': 'disco', 'caminho': caminho}
+        return None
+    # Nada carregado em memória, mas há uma versão válida guardada
+    # (ex.: falha pontual de leitura): o original continua disponível.
+    if ativa:
+        return {'kind': 'versao', 'v': ativa}
+    return None
+
+
+def _info_arquivo(db, tipo):
+    meta = ARQUIVOS_SISTEMA[tipo]
+    st = _status_memoria(tipo)
+    versoes = _versoes_meta(db, tipo)
+    fonte = _fonte_atual(db, tipo, st, versoes)
+    carregada = bool(st.get('carregada'))
+    info = {
+        'tipo': tipo, 'rotulo': meta['rotulo'], 'unidade': meta['unidade'],
+        'arquivo': '', 'origem': '', 'importado_em': '', 'atualizado_em': '',
+        'registros': st.get('total') if carregada else None,
+        'tamanho': None, 'original': fonte is not None,
+        'disponivel': carregada or fonte is not None,
+        'aviso': st.get('erro') or '',
+        'download_url': f'/api/admin/arquivos/{tipo}/baixar',
+        'processado_url': f'/api/admin/arquivos/{tipo}/dados.xlsx' if carregada else '',
+    }
+    atual_vid = None
+    if fonte and fonte['kind'] == 'versao':
+        v = fonte['v']
+        atual_vid = v.id
+        info.update(arquivo=v.arquivo, origem=ORIGEM_ROTULO.get(v.origem, v.origem),
+                    importado_em=_fmt_local(v.importado_em), tamanho=v.tamanho)
+        if info['registros'] is None:
+            info['registros'] = v.registros
+    elif fonte and fonte['kind'] == 'legado':
+        a = fonte['a']
+        info.update(arquivo=a.arquivo, origem=ORIGEM_ROTULO['upload'],
+                    importado_em=_fmt_local(a.atualizado_em), tamanho=a.tamanho)
+    elif fonte and fonte['kind'] == 'disco':
+        c = fonte['caminho']
+        info.update(arquivo=os.path.basename(c), origem=ORIGEM_ROTULO['arquivo'],
+                    importado_em=_fmt_local(datetime.utcfromtimestamp(os.path.getmtime(c))),
+                    tamanho=os.path.getsize(c))
+    elif carregada:
+        info.update(arquivo=st.get('arquivo_nome') or st.get('arquivo') or '',
+                    origem=ORIGEM_ROTULO.get(st.get('fonte'), ''))
+    info['atualizado_em'] = _fmt_local(_dt_de_iso(st.get('quando'))) if carregada else ''
+
+    if not info['disponivel']:
+        info['status'], info['status_rotulo'] = 'nao_importado', 'Não importado'
+        info['mensagem'] = meta['vazio']
+        info['aviso'] = ''
+    elif not carregada:
+        info['status'], info['status_rotulo'] = 'erro', 'Guardado, mas não carregado'
+        info['mensagem'] = ('O arquivo está guardado, mas não foi carregado pelo sistema: '
+                            + (st.get('erro') or 'erro desconhecido'))
+    elif not info['original']:
+        info['status'], info['status_rotulo'] = 'processado', 'Disponível (dados processados)'
+        info['mensagem'] = ('O arquivo original não está guardado; o download gera um Excel '
+                            'com os dados que o sistema está usando.')
+    elif info['aviso']:
+        info['status'], info['status_rotulo'] = 'aviso', 'Disponível — com aviso'
+        info['mensagem'] = ''
+    else:
+        info['status'], info['status_rotulo'] = 'disponivel', 'Disponível'
+        info['mensagem'] = ''
+
+    info['versoes'] = [{
+        'id': v.id, 'arquivo': v.arquivo, 'tamanho': v.tamanho, 'registros': v.registros,
+        'origem': ORIGEM_ROTULO.get(v.origem, v.origem), 'usuario': v.usuario or '',
+        'importado_em': _fmt_local(v.importado_em), 'em_uso': v.id == atual_vid,
+        'download_url': f'/api/admin/arquivos/{tipo}/baixar?versao={v.id}',
+    } for v in versoes]
+    return info
+
+
+def _enviar_bytes(dados, nome, mimetype=None):
+    mt = mimetype or mimetypes.guess_type(nome)[0] or 'application/octet-stream'
+    if nome.lower().endswith('.xlsx'):
+        mt = XLSX_MIME
+    resp = send_file(io.BytesIO(dados), as_attachment=True, download_name=nome, mimetype=mt)
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp
+
+
+def _nao_disponivel(tipo, msg=None):
+    return jsonify({'ok': False,
+                    'erro': msg or ARQUIVOS_SISTEMA[tipo]['vazio']}), 404
+
+
+def _xlsx_dados_processados(tipo):
+    """Gera um .xlsx com os dados que o sistema está usando (cópia em memória;
+    não altera nada). As colunas seguem o formato de importação, então o
+    arquivo pode ser reenviado se precisar."""
+    from openpyxl.cell import WriteOnlyCell
+    st = _status_memoria(tipo)
+    if tipo == 'lista_mestra':
+        with _lista_lock:
+            itens = [dict(x) for x in _lista_por_ordem.values()]
+        cab = ['Ordem', 'Material', 'Texto breve material', 'Quantidade da ordem', 'Part Number']
+
+        def chave(it):
+            o = it.get('ordem') or ''
+            return (0, int(o)) if o.isdigit() else (1, o)
+        linhas = [[int(it['ordem']) if str(it.get('ordem', '')).isdigit() else it.get('ordem'),
+                   it.get('material') or '', it.get('texto_breve') or '',
+                   it.get('quantidade') or 0, it.get('part_number') or '']
+                  for it in sorted(itens, key=chave)]
+    else:
+        with _tempos_lock:
+            tempos = {c: {k: dict(v) for k, v in d.items()} for c, d in _tempos.items()}
+            descs = dict(_tempos_desc)
+        cab = ['Centro Trabalho', 'Material', 'Texto breve material',
+               'Texto breve operação', 'Máquina']
+        linhas, com_tempo = [], set()
+        for centro in sorted(tempos):
+            for cod in sorted(tempos[centro]):
+                t = tempos[centro][cod]
+                com_tempo.add(cod)
+                linhas.append([centro if centro != '—' else '', cod,
+                               t.get('desc') or descs.get(cod, ''), t.get('op') or '', t['min']])
+        # peças que só têm descrição (sem tempo Máquina) — preservadas também
+        for cod in sorted(c for c in descs if c not in com_tempo):
+            linhas.append(['', cod, descs[cod], '', None])
+
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet('Dados')
+    ws.freeze_panes = 'A2'
+    for i, w in enumerate([16, 14, 44, 30, 14][:len(cab)]):
+        ws.column_dimensions[chr(65 + i)].width = w
+    cab_cells = []
+    for c in cab:
+        cell = WriteOnlyCell(ws, value=c)
+        cell.font = Font(bold=True, color='FFFFFF')
+        cell.fill = PatternFill('solid', fgColor='1668C0')
+        cab_cells.append(cell)
+    ws.append(cab_cells)
+    for ln in linhas:
+        ws.append(ln)
+
+    info = wb.create_sheet('Informações')
+    info.column_dimensions['A'].width = 28
+    info.column_dimensions['B'].width = 70
+    for k, v in [
+        ('Arquivo', ARQUIVOS_SISTEMA[tipo]['rotulo']),
+        ('Conteúdo', 'Dados processados em uso pelo sistema (gerado a partir da memória; '
+                     'o arquivo original não estava disponível ou foi pedido este formato).'),
+        ('Origem dos dados', st.get('arquivo') or ''),
+        ('Registros', st.get('total') or 0),
+        ('Última atualização', _fmt_local(_dt_de_iso(st.get('quando')))),
+        ('Gerado em', _fmt_local(datetime.utcnow())),
+        ('Gerado por', _usuario_atual()),
+    ]:
+        info.append([k, v])
+    bio = io.BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
+
+
+@app.route('/api/admin/arquivos')
+@perfil_obrigatorio('admin')
+def api_arquivos_sistema():
+    db = Session()
+    try:
+        return jsonify({'ok': True, 'max_versoes': ARQUIVOS_VERSOES_MAX,
+                        'arquivos': [_info_arquivo(db, t) for t in ARQUIVOS_SISTEMA]})
+    finally:
+        db.close()
+
+
+@app.route('/api/admin/arquivos/<tipo>/baixar')
+@perfil_obrigatorio('admin')
+def api_arquivo_baixar(tipo):
+    """Baixa o arquivo ORIGINAL em uso (ou ?versao=<id> do histórico).
+    Sem original guardado, gera o Excel com os dados processados."""
+    if tipo not in ARQUIVOS_SISTEMA:
+        return jsonify({'ok': False, 'erro': 'Arquivo desconhecido.'}), 404
+    db = Session()
+    try:
+        vid = request.args.get('versao', type=int)
+        if vid:
+            v = db.query(ArquivoVersao).filter_by(id=vid, tipo=tipo).first()
+            if not v or not v.conteudo:
+                return _nao_disponivel(tipo, 'Esta versão não está mais guardada no histórico.')
+            carimbo = (v.importado_em - timedelta(hours=FUSO_LOCAL_HORAS)).strftime('%Y%m%d_%H%M')
+            return _enviar_bytes(bytes(v.conteudo), f'{carimbo}_{v.arquivo or tipo}')
+
+        st = _status_memoria(tipo)
+        fonte = _fonte_atual(db, tipo, st, _versoes_meta(db, tipo))
+        if fonte and fonte['kind'] == 'versao':
+            v = db.query(ArquivoVersao).filter_by(id=fonte['v'].id).first()
+            if v and v.conteudo:
+                return _enviar_bytes(bytes(v.conteudo), v.arquivo or f'{tipo}.xlsx')
+        elif fonte and fonte['kind'] == 'legado':
+            a = db.query(ArquivoDados).filter_by(nome=tipo).first()
+            if a and a.conteudo:
+                return _enviar_bytes(bytes(a.conteudo), a.arquivo or f'{tipo}.xlsx')
+        elif fonte and fonte['kind'] == 'disco':
+            with open(fonte['caminho'], 'rb') as f:
+                return _enviar_bytes(f.read(), os.path.basename(fonte['caminho']))
+        if st.get('carregada'):
+            return api_arquivo_processado(tipo)
+        return _nao_disponivel(tipo)
+    finally:
+        db.close()
+
+
+@app.route('/api/admin/arquivos/<tipo>/dados.xlsx')
+@perfil_obrigatorio('admin')
+def api_arquivo_processado(tipo):
+    """Excel com os dados processados que o sistema está usando agora."""
+    if tipo not in ARQUIVOS_SISTEMA:
+        return jsonify({'ok': False, 'erro': 'Arquivo desconhecido.'}), 404
+    if not _status_memoria(tipo).get('carregada'):
+        return _nao_disponivel(tipo)
+    carimbo = (datetime.utcnow() - timedelta(hours=FUSO_LOCAL_HORAS)).strftime('%Y%m%d_%H%M')
+    return _enviar_bytes(_xlsx_dados_processados(tipo),
+                         f'{tipo}_dados_processados_{carimbo}.xlsx', XLSX_MIME)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

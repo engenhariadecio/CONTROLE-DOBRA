@@ -108,6 +108,14 @@
   <button class="btn btn-ghost btn-sm mt" id="btnSalvarCentros"><i class="bi bi-check-lg"></i>Salvar centros</button>
 </div>
 
+<div class="card card-pad mt" id="arquivosSistema">
+  <div class="card-title"><i class="bi bi-folder2-open"></i>Arquivos do sistema</div>
+  <p class="hint" style="margin-bottom:14px;">Baixe de volta as planilhas que o sistema está usando. O download é só para consulta e backup: não altera a lista, os tempos, a meta de peças/hora, o OEE nem o Painel Gerencial.</p>
+  <div class="arq-grid" id="arqGrid">
+    <div class="arq-box"><span class="tag tag-slate">Verificando…</span></div>
+  </div>
+</div>
+
 <div class="card card-pad mt">
   <div class="card-title"><i class="bi bi-hdd-stack-fill"></i>Backup e restauração</div>
   <p class="hint" style="margin-bottom:12px;">Baixe um backup completo da base (usuários, máquinas, configurações, turnos, apontamentos e auditoria) em um único arquivo. Guarde-o em local seguro. A restauração <b>substitui toda a base atual</b> pelo conteúdo do arquivo.</p>
@@ -261,7 +269,7 @@ async function enviarArquivo(url, inputId, btn){
 }
 document.getElementById('btnEnviarLista').addEventListener('click', async(e)=>{
   const j=await enviarArquivo('/api/admin/lista/upload','listaFile',e.target);
-  if(j){ toast('Lista atualizada: '+j.total+' OPs','ok'); statusLista(); }
+  if(j){ toast('Lista atualizada: '+j.total+' OPs','ok'); statusLista(); statusArquivos(); }
 });
 const btnUrl=document.getElementById('btnSalvarUrl');
 if(btnUrl) btnUrl.addEventListener('click', async(e)=>{
@@ -273,7 +281,7 @@ if(btnUrl) btnUrl.addEventListener('click', async(e)=>{
 document.getElementById('btnRecarregarLista').addEventListener('click', async(e)=>{
   e.target.disabled=true;
   try{ const j=await api('/api/admin/lista/recarregar','POST',{});
-    toast(j.carregada?('Lista recarregada: '+j.total+' OPs'):'Falha ao carregar','ok'); statusLista();
+    toast(j.carregada?('Lista recarregada: '+j.total+' OPs'):'Falha ao carregar','ok'); statusLista(); statusArquivos();
   }catch(err){ toast(err.message,'err'); }
   finally{ e.target.disabled=false; }
 });
@@ -304,12 +312,12 @@ function renderCentros(mapa){
 }
 document.getElementById('btnEnviarTempos').addEventListener('click', async(e)=>{
   const j=await enviarArquivo('/api/admin/tempos/upload','temposFile',e.target);
-  if(j){ toast('Tempos atualizados: '+j.total+' tempos','ok'); statusTempos(); }
+  if(j){ toast('Tempos atualizados: '+j.total+' tempos','ok'); statusTempos(); statusArquivos(); }
 });
 document.getElementById('btnRecarregarTempos').addEventListener('click', async(e)=>{
   e.target.disabled=true;
   try{ const j=await api('/api/admin/tempos/recarregar','POST',{});
-    toast(j.carregada?('Tempos recarregados: '+j.total):'Falha ao carregar','ok'); statusTempos();
+    toast(j.carregada?('Tempos recarregados: '+j.total):'Falha ao carregar','ok'); statusTempos(); statusArquivos();
   }catch(err){ toast(err.message,'err'); } finally{ e.target.disabled=false; }
 });
 document.getElementById('btnSalvarCentros').addEventListener('click', async(e)=>{
@@ -323,5 +331,95 @@ document.getElementById('btnSalvarCentros').addEventListener('click', async(e)=>
   }catch(err){ toast(err.message,'err'); } finally{ e.target.disabled=false; }
 });
 statusTempos();
+
+// ── Arquivos do sistema (somente leitura: consulta/backup) ──
+const ARQ_TAG = {disponivel:'tag-green', aviso:'tag-amber', processado:'tag-blue',
+                 erro:'tag-red', nao_importado:'tag-slate'};
+function fmtNum(n){ return (n==null||n==='') ? '—' : Number(n).toLocaleString('pt-BR'); }
+function fmtTam(b){
+  if(b==null) return '—';
+  if(b<1024) return b+' B';
+  if(b<1048576) return (b/1024).toLocaleString('pt-BR',{maximumFractionDigits:0})+' KB';
+  return (b/1048576).toLocaleString('pt-BR',{maximumFractionDigits:1})+' MB';
+}
+function arqLinha(rot, val){
+  return '<dt>'+rot+'</dt><dd>'+(val ? esc(val) : '<span class="muted">—</span>')+'</dd>';
+}
+function renderArquivo(a){
+  let h = '<div class="arq-box">'
+    + '<div class="arq-head"><span class="arq-nome">'+esc(a.rotulo)+'</span>'
+    + '<span class="tag '+(ARQ_TAG[a.status]||'tag-slate')+'">'+esc(a.status_rotulo)+'</span></div>';
+  if(!a.disponivel){
+    h += '<div class="arq-vazio"><i class="bi bi-inbox"></i><div><b>'+esc(a.mensagem)+'</b>'
+      + '<div class="hint">Envie a planilha no card de '+esc(a.rotulo)+' acima para disponibilizar o download.</div>'
+      + '</div></div>'
+      + '<button class="btn btn-primary" disabled><i class="bi bi-download"></i>Baixar arquivo</button></div>';
+    return h;
+  }
+  h += '<dl class="arq-kv">'
+    + arqLinha('Arquivo', a.arquivo)
+    + arqLinha('Origem', a.origem)
+    + arqLinha('Última importação', a.importado_em)
+    + arqLinha('Última atualização', a.atualizado_em)
+    + '<dt>Registros</dt><dd class="mono">'+fmtNum(a.registros)+' <span class="muted" style="font-family:Manrope,sans-serif;">'+esc(a.unidade)+'</span></dd>'
+    + arqLinha('Tamanho', a.tamanho!=null ? fmtTam(a.tamanho) : '')
+    + '</dl>';
+  if(a.mensagem) h += '<p class="hint" style="margin:0 0 10px;">'+esc(a.mensagem)+'</p>';
+  if(a.aviso && a.status!=='erro') h += '<p class="hint" style="margin:0 0 10px;color:#b57500;"><i class="bi bi-exclamation-triangle"></i> '+esc(a.aviso)+'</p>';
+  h += '<div class="flex" style="gap:10px;flex-wrap:wrap;align-items:center;">'
+    + '<button class="btn btn-primary" data-baixar="'+esc(a.download_url)+'"><i class="bi bi-download"></i>Baixar arquivo</button>';
+  if(a.original && a.processado_url)
+    h += '<button class="btn btn-ghost btn-sm" data-baixar="'+esc(a.processado_url)+'" title="Excel gerado com os dados que o sistema está usando agora"><i class="bi bi-table"></i>Excel dos dados em uso</button>';
+  h += '</div>';
+  if(a.versoes && a.versoes.length){
+    h += '<details class="arq-hist"><summary>Histórico de versões ('+a.versoes.length+')</summary>'
+      + '<div class="tabela-wrap"><table class="tbl"><thead><tr><th>Importado em</th><th>Arquivo</th><th>Registros</th><th></th></tr></thead><tbody>'
+      + a.versoes.map(v=>'<tr><td class="mono" style="white-space:nowrap;">'+esc(v.importado_em)+'</td>'
+          + '<td class="arq-hist-nome">'+esc(v.arquivo)+(v.em_uso?' <span class="tag tag-green">em uso</span>':'')
+          + '<div class="hint" style="margin:2px 0 0;">'+fmtTam(v.tamanho)+' · '+esc(v.origem)+(v.usuario?' · '+esc(v.usuario):'')+'</div></td>'
+          + '<td class="mono">'+fmtNum(v.registros)+'</td>'
+          + '<td style="text-align:right;"><button class="btn btn-ghost btn-sm" data-baixar="'+esc(v.download_url)+'" title="Baixar esta versão"><i class="bi bi-download"></i>Baixar</button></td></tr>'
+        ).join('')
+      + '</tbody></table></div></details>';
+  }
+  return h + '</div>';
+}
+async function statusArquivos(){
+  const box=document.getElementById('arqGrid');
+  try{
+    const j=await api('/api/admin/arquivos');
+    box.innerHTML = j.arquivos.map(renderArquivo).join('');
+  }catch(e){
+    box.innerHTML='<div class="arq-box"><span class="tag tag-red">Não foi possível consultar os arquivos: '+esc(e.message)+'</span></div>';
+  }
+}
+function nomeDoCabecalho(cd){
+  if(!cd) return '';
+  let m=/filename\*=UTF-8''([^;]+)/i.exec(cd);
+  if(m){ try{ return decodeURIComponent(m[1].replace(/"/g,'')); }catch(e){} }
+  m=/filename="?([^";]+)"?/i.exec(cd);
+  return m ? m[1] : '';
+}
+async function baixarArquivo(url, btn){
+  btn.disabled=true; const txt=btn.innerHTML;
+  btn.innerHTML='<i class="bi bi-hourglass-split"></i>'+(btn.classList.contains('btn-primary')?'Preparando…':'');
+  try{
+    const r=await fetch(url);
+    if(!r.ok){ let j={}; try{ j=await r.json(); }catch(e){} throw new Error(j.erro||('Erro '+r.status)); }
+    const blob=await r.blob();
+    const nome=nomeDoCabecalho(r.headers.get('Content-Disposition'))||'arquivo';
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob); a.download=nome;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+    toast('Download iniciado: '+esc(nome),'ok');
+  }catch(err){ toast(err.message,'err'); }
+  finally{ btn.disabled=false; btn.innerHTML=txt; }
+}
+document.getElementById('arqGrid').addEventListener('click', e=>{
+  const b=e.target.closest('[data-baixar]');
+  if(b) baixarArquivo(b.dataset.baixar, b);
+});
+statusArquivos();
 </script>
 {% endblock %}

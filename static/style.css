@@ -418,3 +418,21 @@ table.tbl tbody tr:last-child td{border-bottom:none;}
   .kpi-val{font-size:1.5rem;}
 }
 @media(max-width:420px){.maq-grid{grid-template-columns:1fr;}}
+
+/* ── Arquivos do sistema (Configurações) ───────────────────────── */
+.arq-grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));}
+.arq-box{border:1px solid var(--line);border-radius:var(--r-sm);padding:16px;background:#fbfcfe;min-width:0;}
+.arq-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;}
+.arq-nome{font-weight:800;font-size:1rem;}
+.arq-kv{display:grid;grid-template-columns:max-content 1fr;gap:6px 14px;margin:0 0 14px;font-size:.88rem;}
+.arq-kv dt{color:var(--slate);font-weight:700;}
+.arq-kv dd{margin:0;font-weight:600;overflow-wrap:anywhere;}
+.arq-vazio{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;margin-bottom:14px;
+  border:1.5px dashed var(--line);border-radius:var(--r-sm);background:#fff;}
+.arq-vazio > i{font-size:1.4rem;color:var(--slate);}
+.arq-hist{margin-top:14px;}
+.arq-hist summary{cursor:pointer;font-weight:700;font-size:.85rem;color:var(--brand-a);}
+.arq-hist .tabela-wrap{margin-top:8px;overflow-x:auto;}
+.arq-hist table.tbl{font-size:.8rem;min-width:480px;}
+.arq-hist .arq-hist-nome{min-width:190px;word-break:break-word;}
+.arq-hist table.tbl td,.arq-hist table.tbl th{padding:8px 10px;}

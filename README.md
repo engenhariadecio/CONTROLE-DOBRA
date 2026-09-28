@@ -51,6 +51,31 @@ possível apontar um link do SharePoint (opcional), caso a TI libere link
 público. O leitor de código de barras com dígitos extras é tratado
 automaticamente (remove 4 no início e 4 no fim).
 
+### Arquivos do sistema (download da Lista Mestra e dos Tempos do SAP)
+Em `Configurações → Arquivos do sistema` o admin baixa de volta as planilhas
+que o sistema está usando, com nome do arquivo, origem, última importação,
+última atualização, quantidade de registros, tamanho e status.
+
+- **Baixar arquivo** entrega o **arquivo original** (byte a byte) da versão em
+  uso — seja o enviado em Configurações, o baixado do SharePoint ou o arquivo
+  inicial do repositório. Só quando o original não estiver disponível é gerado
+  um Excel com os dados processados (colunas no formato de importação).
+- **Excel dos dados em uso** gera, a qualquer momento, o `.xlsx` exatamente com
+  o que está carregado na memória (útil para conferência).
+- **Histórico de versões**: cada importação válida vira uma versão (o arquivo
+  original fica guardado no banco). A versão *em uso* é sempre a última válida;
+  arquivos inválidos são recusados e não substituem a atual. Reenviar um arquivo
+  idêntico não duplica. São mantidas as 10 últimas versões por tipo (variável
+  `ARQUIVOS_VERSOES_MAX`).
+- O download é **somente leitura**: não recarrega nem altera a lista, os tempos,
+  a meta de peças/hora, o OEE ou o Painel Gerencial.
+- Sem arquivo importado, a tela mostra "Arquivo … ainda não foi importado." e
+  nenhum arquivo vazio é gerado.
+- Com vários workers do gunicorn, cada worker confere a versão ativa no banco a
+  cada 30 s e se recarrega sozinho — todos usam a mesma versão.
+- Bases antigas: o arquivo que já estava enviado vira automaticamente a
+  versão 1 do histórico no primeiro start.
+
 **Painel gerencial** (`/dashboard`) — **somente visualização**
 - Para os usuários com acesso **Gerencial**. Não edita nada: é um monitor.
 - **Atualiza sozinho a cada 20s** (produção em tempo real, estilo MES).
