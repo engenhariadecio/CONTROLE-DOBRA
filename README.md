@@ -200,7 +200,14 @@ Qualidade       = (produzidas − refugo) ÷ produzidas
 ```
 
 A **meta de peças/hora** é **automática**: vem da planilha de **Tempos do SAP**
-(coluna Máquina, min/peça) — `meta pç/h = 60 ÷ tempo Máquina`. É recalculada
+(coluna Máquina, min/peça) — `meta pç/h = 60 ÷ tempo da operação do setor`.
+O tempo é sempre o da **operação específica** do setor (Texto breve operação /
+Centro Trabalho), nunca o de outra operação: na **Dobra**, é a **soma dos
+tempos da peça no centro DO01** (ex.: DOBRAR EST.1 + DOBRAR EST.2). Em
+`Configurações → Operação do SAP por setor` informe o centro (`DO01`), o texto
+da operação (`SERIGRAFAR`) ou os dois (`LA01:CORTAR A LASER`). Operações
+repetidas em vários produtos-pai contam uma vez, e roteiros alternativos não
+são somados entre si. É recalculada
 sempre com a planilha em uso, então atualizar os Tempos do SAP atualiza o
 Desempenho/OEE (inclusive dos apontamentos já finalizados). Só quando a peça
 **não tem tempo no SAP** vale a prioridade manual: **peça (código/material) →

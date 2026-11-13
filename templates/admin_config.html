@@ -103,7 +103,7 @@
     <button class="btn btn-ghost btn-sm" id="btnRecarregarTempos"><i class="bi bi-arrow-clockwise"></i>Recarregar</button>
   </div>
   <input type="hidden" id="temposUrl">
-  <label class="label">Centro de trabalho do SAP por setor <span class="hint">(qual operação/centro comparar em cada setor)</span></label>
+  <label class="label">Operação do SAP por setor <span class="hint">(centro de trabalho, ex. <b>DO01</b> — soma os tempos da peça no centro; ou o texto breve da operação, ex. <b>SERIGRAFAR</b>; ou os dois, ex. <b>LA01:CORTAR A LASER</b>). A meta de peças/hora do setor é 60 ÷ esse tempo.</span></label>
   <div id="centrosSetor" class="turnos-box"></div>
   <button class="btn btn-ghost btn-sm mt" id="btnSalvarCentros"><i class="bi bi-check-lg"></i>Salvar centros</button>
 </div>
@@ -307,7 +307,7 @@ function renderCentros(mapa){
   const box=document.getElementById('centrosSetor');
   box.innerHTML = SETORES_CFG.map(s=>
     '<div class="turno-row"><span style="flex:1 1 160px;font-weight:700;">'+esc(s)+'</span>'
-    +'<input class="input" data-setor="'+esc(s)+'" style="max-width:160px;" placeholder="ex.: DO01" value="'+esc(mapa[s]||'')+'"></div>'
+    +'<input class="input" data-setor="'+esc(s)+'" style="max-width:240px;" placeholder="ex.: DO01 ou SERIGRAFAR" value="'+esc(mapa[s]||'')+'"></div>'
   ).join('');
 }
 document.getElementById('btnEnviarTempos').addEventListener('click', async(e)=>{

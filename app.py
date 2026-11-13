@@ -492,34 +492,72 @@ def _achar_arquivo(nomes):
     return None
 
 
+def _sem_acento(s):
+    import unicodedata
+    return ''.join(c for c in unicodedata.normalize('NFD', str(s))
+                   if unicodedata.category(c) != 'Mn')
+
+
+def _norm_op(s):
+    """Normaliza o texto breve da operação para comparação (DOBRAR, dobrar…)."""
+    return ' '.join(_sem_acento(s or '').upper().split())
+
+
 def _parsear_tempos(linhas):
     """Interpreta as linhas da planilha de tempos. Devolve (tempos, descs):
-    tempos = { 'CENTRO': { 'codigo': {'min', 'op', 'desc'} } }
-    descs  = { 'codigo': 'Texto breve material' }"""
+    tempos = { 'CENTRO': { 'codigo': {'min', 'op', 'desc', 'ops'} } }
+    descs  = { 'codigo': 'Texto breve material' }
+
+    'min' é a SOMA dos tempos Máquina (min/peça) de todas as operações da peça
+    naquele centro de trabalho (ex.: DOBRAR EST.1 + DOBRAR EST.2 no DO01);
+    'ops' lista cada operação: [{'op': texto breve, 'min': tempo}].
+
+    A planilha é uma explosão de estrutura: a mesma operação da mesma peça se
+    repete em vários produtos-pai, e a peça pode ter roteiros alternativos
+    (versão de produção / LT alternativa). Por isso:
+      - cada operação (sequência + nº da operação) conta uma única vez;
+      - roteiros alternativos NÃO são somados entre si — usa-se o roteiro
+        válido hoje, de validade mais recente e de menor alternativa."""
     def norm(s):
-        return str(s).strip().lower() if s is not None else ''
+        return _sem_acento(s).strip().lower() if s is not None else ''
+    nomes = {
+        'material': 'mat', 'maquina': 'maq',
+        'centro trabalho': 'centro', 'centro de trabalho': 'centro',
+        'texto breve operacao': 'op', 'texto breve material': 'desc',
+        'operacao': 'nop', 'sequencia': 'seq',
+        'versao de producao': 'versao', 'lt alternativa': 'alt',
+        'valido desde': 'desde', 'valido ate': 'ate',
+    }
     cab_i, col = None, {}
     for i, row in enumerate(linhas[:8]):
         m = {}
         for j, nome in enumerate(norm(c) for c in (row or [])):
-            if nome == 'material':
-                m['mat'] = j
-            elif nome == 'máquina' or nome == 'maquina':
-                m['maq'] = j
-            elif nome == 'centro trabalho' or nome == 'centro de trabalho':
-                m['centro'] = j
-            elif nome == 'texto breve operação' or nome == 'texto breve operacao':
-                m['op'] = j
-            elif nome == 'texto breve material':
-                m['desc'] = j
+            k = nomes.get(nome)
+            if k and k not in m:
+                m[k] = j
         if 'mat' in m and 'maq' in m:
             cab_i, col = i, m
             break
     if cab_i is None:
         raise ValueError('não encontrei as colunas Material e Máquina na planilha de tempos.')
 
-    tempos = {}
+    def _data(v):
+        if isinstance(v, datetime):
+            return v.date()
+        if isinstance(v, ddate):
+            return v
+        if isinstance(v, str):
+            for fmt in ('%d/%m/%Y', '%d.%m.%Y', '%Y-%m-%d'):
+                try:
+                    return datetime.strptime(v.strip()[:10], fmt).date()
+                except ValueError:
+                    pass
+        return None
+
+    # acc[centro][cod][roteiro] = {'desde', 'ate', 'ops': {chave_op: [texto, min]}}
+    acc = {}
     descs = {}
+    descs_centro = {}
     for row in linhas[cab_i + 1:]:
         if not row:
             continue
@@ -527,6 +565,10 @@ def _parsear_tempos(linhas):
         def val(k):
             j = col.get(k)
             return row[j] if j is not None and j < len(row) else None
+
+        def txt(k):
+            v = val(k)
+            return str(v).strip() if v is not None else ''
         cod = _norm_cod(val('mat'))
         t = val('maq')
         if isinstance(t, str):   # csv: número vem como texto (aceita vírgula)
@@ -538,15 +580,47 @@ def _parsear_tempos(linhas):
             if cod and val('desc') and cod not in descs:
                 descs[cod] = str(val('desc')).strip()
             continue
-        centro = (str(val('centro')).strip() if val('centro') else '') or '—'
-        op = str(val('op')).strip() if val('op') else ''
-        desc = str(val('desc')).strip() if val('desc') else ''
+        centro = txt('centro') or '—'
+        op = txt('op')
+        desc = txt('desc')
         if desc and cod not in descs:
             descs[cod] = desc
+        if desc:
+            descs_centro.setdefault((centro, cod), desc)
+        roteiro = (txt('versao'), txt('alt'))
+        # sem a coluna do nº da operação, a operação é identificada pelo texto
+        chave_op = (txt('seq'), txt('nop')) if 'nop' in col else ('', _norm_op(op))
+        r = acc.setdefault(centro, {}).setdefault(cod, {}).setdefault(
+            roteiro, {'desde': _data(val('desde')), 'ate': _data(val('ate')), 'ops': {}})
+        atual = r['ops'].get(chave_op)
+        # mesma operação repetida em vários produtos-pai: conta uma vez (menor tempo)
+        if atual is None or float(t) < atual[1]:
+            r['ops'][chave_op] = [op, float(t)]
+
+    hoje = (datetime.utcnow() - timedelta(hours=FUSO_LOCAL_HORAS)).date()
+
+    def _ordem(item):
+        chave, r = item
+        valido = ((r['desde'] is None or r['desde'] <= hoje)
+                  and (r['ate'] is None or r['ate'] >= hoje))
+        return (0 if valido else 1,
+                -(r['desde'].toordinal() if r['desde'] else 0),
+                chave[1], chave[0])
+
+    tempos = {}
+    for centro, pecas in acc.items():
         porcentro = tempos.setdefault(centro, {})
-        # mantém o menor tempo quando a peça repete a mesma operação/centro
-        if cod not in porcentro or float(t) < porcentro[cod]['min']:
-            porcentro[cod] = {'min': float(t), 'op': op, 'desc': desc}
+        for cod, roteiros in pecas.items():
+            _chave, r = min(roteiros.items(), key=_ordem)
+            ops = [{'op': o[0], 'min': o[1]} for _k, o in sorted(r['ops'].items())]
+            nomes_op = []
+            for o in ops:
+                if o['op'] and o['op'] not in nomes_op:
+                    nomes_op.append(o['op'])
+            porcentro[cod] = {'min': round(sum(o['min'] for o in ops), 6),
+                              'op': ' + '.join(nomes_op),
+                              'desc': descs_centro.get((centro, cod), ''),
+                              'ops': ops}
     return tempos, descs
 
 
@@ -664,19 +738,52 @@ def get_centro_por_setor():
     return v
 
 
+def _alvo_do_setor(setor):
+    """Operação do SAP configurada para o setor -> (centro, filtro_operacao).
+    Aceita em Configurações:
+      'DO01'               -> soma de todas as operações da peça no centro DO01
+      'SERIGRAFAR'         -> operações cujo texto breve começa com SERIGRAFAR
+      'LA01:CORTAR A LASER'-> só essa operação dentro do centro LA01"""
+    bruto = str(get_centro_por_setor().get(setor or '', '') or '').strip()
+    if not bruto:
+        return '', ''
+    if ':' in bruto:
+        c, o = bruto.split(':', 1)
+        return c.strip().upper(), _norm_op(o)
+    with _tempos_lock:
+        eh_centro = bruto.upper() in _tempos
+    if eh_centro or (len(bruto) <= 5 and any(ch.isdigit() for ch in bruto)):
+        return bruto.upper(), ''
+    return '', _norm_op(bruto)
+
+
 def tempo_sap_unitario(codigo, setor):
-    """Tempo Máquina do SAP (min/peça) para a peça no centro do setor.
-    Se não achar no centro do setor, tenta qualquer centro (menor tempo)."""
+    """Tempo Máquina do SAP (min/peça) da OPERAÇÃO do setor para a peça.
+
+    Usa somente a operação/centro configurado para o setor (Dobra -> DO01,
+    Serigrafia -> SERIGRAFAR…): é a soma dos tempos das operações da peça
+    naquele centro. Nunca usa o tempo de outra operação; se a peça não tiver
+    tempo nessa operação, devolve None."""
     cod = _norm_cod(codigo)
     if not cod:
         return None
-    centro = get_centro_por_setor().get(setor or '', '')
+    centro, filtro = _alvo_do_setor(setor)
+    if not centro and not filtro:
+        return None
     with _tempos_lock:
-        if centro and centro in _tempos and cod in _tempos[centro]:
-            return _tempos[centro][cod]['min']
-        # procura em qualquer centro
-        achados = [d[cod]['min'] for d in _tempos.values() if cod in d]
-    return min(achados) if achados else None
+        if centro and not filtro:
+            e = _tempos.get(centro, {}).get(cod)
+            return e['min'] if e and e['min'] > 0 else None
+        centros = [centro] if centro else list(_tempos.keys())
+        total = 0.0
+        for c in centros:
+            e = _tempos.get(c, {}).get(cod)
+            if not e:
+                continue
+            for o in e.get('ops') or [{'op': e.get('op', ''), 'min': e['min']}]:
+                if _norm_op(o['op']).startswith(filtro):
+                    total += o['min']
+    return round(total, 6) if total > 0 else None
 
 
 def meta_sap_pph(codigo, setor):
@@ -1888,7 +1995,7 @@ def _xlsx_dados_processados(tipo):
                   for it in sorted(itens, key=chave)]
     else:
         with _tempos_lock:
-            tempos = {c: {k: dict(v) for k, v in d.items()} for c, d in _tempos.items()}
+            tempos = {c: {k: dict(v) for k, v in d.items()} for c, d in _tempos.items()}  # 'min' = soma do centro
             descs = dict(_tempos_desc)
         cab = ['Centro Trabalho', 'Material', 'Texto breve material',
                'Texto breve operação', 'Máquina']
@@ -2699,6 +2806,7 @@ def api_config_salvar():
     if isinstance(d.get('centro_por_setor'), dict):
         cfg_set('centro_por_setor', {str(k): str(v).strip()
                                      for k, v in d['centro_por_setor'].items() if v})
+        _centro_cache['v'] = None   # vale na hora para a meta automática
     if isinstance(d.get('turnos'), list):
         turnos = []
         for t in d['turnos']:
