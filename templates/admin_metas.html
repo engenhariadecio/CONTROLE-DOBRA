@@ -11,7 +11,7 @@
 
 <div class="alert alert-info" style="margin-bottom:14px;">
   <i class="bi bi-info-circle-fill"></i>
-  <span>Cadastre a meta de peças/hora de cada peça (código/material). Ao iniciar uma OP, o sistema usa a meta da peça; se não houver, usa a da máquina; se não houver, o padrão global (<b>{{ meta_pph_padrao or 0 }}</b> pç/h).</span>
+  <span>A meta de peças/hora é calculada automaticamente pelos <b>Tempos do SAP</b> (60 min ÷ tempo Máquina da peça). As metas cadastradas aqui valem só para peças <b>sem tempo no SAP</b>: nesse caso o sistema usa a meta da peça; se não houver, usa a da máquina; se não houver, o padrão global (<b>{{ meta_pph_padrao or 0 }}</b> pç/h).</span>
 </div>
 
 <div class="toolbar">

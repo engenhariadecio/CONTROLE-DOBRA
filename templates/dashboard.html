@@ -257,8 +257,8 @@ function render(j){
     + cardsAtivos(j.em_andamento||[]) + '</div>';
 
   html += '<div class="grid-2 mt">'
-    + '<div class="card card-pad"><div class="card-title"><i class="bi bi-graph-up"></i>Produção por dia</div><div class="chart-box"><canvas id="chDia"></canvas></div></div>'
-    + '<div class="card card-pad"><div class="card-title"><i class="bi bi-pie-chart-fill"></i>Motivos de pausa</div><div class="chart-box"><canvas id="chPausa"></canvas></div></div>'
+    + '<div class="card card-pad" data-exp="dia"><div class="card-title"><i class="bi bi-graph-up"></i>Produção por dia <small class="card-title-sub">horas reportadas por máquina</small>'+btnExpandir('dia')+'</div><div class="chart-box"><canvas id="chDia"></canvas></div>'+notaSemTempo(j.horas_reportadas)+'</div>'
+    + '<div class="card card-pad" data-exp="pausa"><div class="card-title"><i class="bi bi-pie-chart-fill"></i>Motivos de pausa'+btnExpandir('pausa')+'</div><div class="chart-box"><canvas id="chPausa"></canvas></div></div>'
     + '</div>';
 
   html += '<div class="grid-2 mt">'
@@ -269,11 +269,47 @@ function render(j){
   html += '<div class="mt"><div class="card-title"><i class="bi bi-clock-history"></i>Últimos apontamentos finalizados</div>'+tabelaUltimos(j.ultimos)+'</div>';
 
   document.getElementById('conteudo').innerHTML = html;
+  aplicarExpandido();   // mantém o gráfico em tela cheia entre as atualizações automáticas
   ATIVOS = {rows:(j.em_andamento||[]), fetchMs:Date.now()};
   tickAtivos();
   destruirCharts();
   desenharCharts(j);
 }
+
+// ── Expandir gráficos (tela cheia) ──
+let EXPANDIDO = null;
+function btnExpandir(id){
+  return '<button type="button" class="btn-expand" data-exp-btn="'+id+'" onclick="alternarExpandir(\''+id+'\')" title="Expandir" aria-label="Expandir gráfico"><i class="bi bi-arrows-fullscreen"></i></button>';
+}
+function aplicarExpandido(){
+  let achou=false;
+  document.querySelectorAll('[data-exp]').forEach(c=>{
+    const on = (c.dataset.exp===EXPANDIDO);
+    c.classList.toggle('card-expandido', on);
+    if(on) achou=true;
+    const b=c.querySelector('[data-exp-btn]');
+    if(b){
+      b.title = on ? 'Fechar (Esc)' : 'Expandir';
+      b.innerHTML = '<i class="bi '+(on?'bi-fullscreen-exit':'bi-arrows-fullscreen')+'"></i>';
+    }
+  });
+  if(!achou) EXPANDIDO=null;
+  document.body.classList.toggle('tem-expandido', achou);
+}
+function alternarExpandir(id){
+  EXPANDIDO = (EXPANDIDO===id) ? null : id;
+  aplicarExpandido();
+  // o Chart.js acompanha o novo tamanho do contêiner
+  setTimeout(()=>Object.values(charts).forEach(c=>{try{c.resize();}catch(e){}}), 30);
+}
+document.addEventListener('keydown', e=>{ if(e.key==='Escape' && EXPANDIDO){ alternarExpandir(EXPANDIDO); } });
+
+function notaSemTempo(hr){
+  const n = hr ? (hr.ops_sem_tempo||0) : 0;
+  if(!n) return '';
+  return '<div class="chart-nota"><i class="bi bi-info-circle-fill"></i>'+n+' OP'+(n>1?'s':'')+' sem tempo na planilha de Tempos do SAP '+(n>1?'ficaram':'ficou')+' fora das horas reportadas.</div>';
+}
+function numBR(v, casas){ return (v==null?0:v).toLocaleString('pt-BR',{minimumFractionDigits:casas,maximumFractionDigits:casas}); }
 
 function pctTxt(v){ return (v==null) ? '—' : (String(v).replace('.',',')+'%'); }
 function barPct(v){ return (v==null) ? 0 : Math.max(0, Math.min(100, v)); }
@@ -294,14 +330,14 @@ function blocoOee(k){
       +'<div class="oee-bar"><span style="width:'+barPct(val)+'%;background:'+c+';"></span></div></div>';
   };
   let pillars = pilar('Disponibilidade','tempo produtivo ÷ total', k.disponibilidade, 'bi-hourglass-split')
-    + pilar('Desempenho','produção ÷ meta pç/h', k.desempenho, 'bi-lightning-charge-fill')
+    + pilar('Desempenho','produção ÷ meta pç/h (60 ÷ tempo SAP)', k.desempenho, 'bi-lightning-charge-fill')
     + pilar('Qualidade','peças boas ÷ produzidas', k.qualidade, 'bi-patch-check-fill');
   if(semMeta){
-    pillars += '<div class="oee-hint"><i class="bi bi-info-circle-fill"></i>Cadastre a <b>&nbsp;meta de peças/hora&nbsp;</b> nas máquinas (ou um padrão em Configurações) para calcular Desempenho e OEE.</div>';
+    pillars += '<div class="oee-hint"><i class="bi bi-info-circle-fill"></i>Sem tempo do SAP para as peças do período. A meta de peças/hora vem dos <b>&nbsp;Tempos do SAP&nbsp;</b> (60 ÷ tempo Máquina); atualize a planilha ou cadastre uma meta na máquina para calcular Desempenho e OEE.</div>';
   }
-  return '<div class="card card-pad oee-card"><div class="card-title"><i class="bi bi-speedometer2"></i>OEE — Eficiência Global do Equipamento</div>'
+  return '<div class="card card-pad oee-card" data-exp="oee"><div class="card-title"><i class="bi bi-speedometer2"></i>OEE — Eficiência Global do Equipamento'+btnExpandir('oee')+'</div>'
     +'<div class="oee-wrap">'
-    +'<div><div class="oee-gauge"><canvas id="chOee" width="200" height="200"></canvas>'
+    +'<div><div class="oee-gauge"><canvas id="chOee"></canvas>'
     +'<div class="oee-center"><span class="oee-num">'+pctTxt(k.oee)+'</span><span class="oee-lab">OEE</span>'
     + (meta?'<span class="oee-meta">meta '+pctTxt(meta)+'</span>':'')+'</div></div></div>'
     +'<div class="oee-pillars">'+pillars+'</div>'
@@ -311,9 +347,9 @@ function blocoOee(k){
 function tabelaRank(rows){
   if(!rows || !rows.length) return '<div class="empty" style="padding:26px;"><p>Sem dados no período.</p></div>';
   return '<div class="tabela-wrap"><table class="tbl"><thead><tr>'
-    +'<th>Nome</th><th class="td-num">OPs</th><th class="td-num">Peças</th><th class="td-num">Horas prod.</th><th class="td-num">Pçs/h</th><th class="td-num">OEE</th></tr></thead><tbody>'
+    +'<th>Nome</th><th class="td-num">OPs</th><th class="td-num">Peças</th><th class="td-num">Horas prod.</th><th class="td-num">Horas rep.</th><th class="td-num">Pçs/h</th><th class="td-num">OEE</th></tr></thead><tbody>'
     + rows.map(r=>'<tr><td><b>'+esc(r.nome)+'</b></td><td class="td-num">'+r.ops+'</td>'
-      +'<td class="td-num">'+fmt(r.pecas)+'</td><td class="td-num">'+r.prod_h+'</td>'
+      +'<td class="td-num">'+fmt(r.pecas)+'</td><td class="td-num">'+r.prod_h+'</td><td class="td-num">'+(r.horas_rep||0)+'</td>'
       +'<td class="td-num">'+r.pph+'</td><td class="td-num">'+tagOee(r.oee)+'</td></tr>').join('')
     + '</tbody></table></div>';
 }
@@ -406,28 +442,39 @@ function desenharCharts(j){
       type:'doughnut',
       data:{ datasets:[{ data:[val, 100-val],
         backgroundColor:[c, 'rgba(255,255,255,.22)'], borderWidth:0 }]},
-      options:{responsive:false, maintainAspectRatio:false, cutout:'76%',
+      options:{responsive:true, maintainAspectRatio:false, cutout:'76%',
         rotation:-90, circumference:360,
         plugins:{legend:{display:false}, tooltip:{enabled:false}}}
     });
   }
-  // Produção por dia
-  const dia = j.por_dia || [];
+  // Produção por dia — máquinas no eixo X × horas reportadas
+  // (tempo do item no SAP × quantidade ÷ 60); com vários dias, empilha por dia
+  const hr = j.horas_reportadas || {maquinas:[], dias:[], total:[], pecas:[], por_dia:[]};
   const ctx1 = document.getElementById('chDia');
   if(ctx1){
-    charts.dia = new Chart(ctx1, {
-      type:'bar',
-      data:{ labels: dia.map(d=>d.dia.split('-').reverse().slice(0,2).join('/')),
-        datasets:[
-          {label:'Peças', data:dia.map(d=>d.pecas), backgroundColor:azul, borderRadius:6, yAxisID:'y'},
-          {label:'Horas produtivas', data:dia.map(d=>d.prod_h), type:'line', borderColor:verde,
-           backgroundColor:verde, tension:.3, yAxisID:'y1', pointRadius:3}
-        ]},
-      options:{responsive:true, maintainAspectRatio:false,
-        plugins:{legend:{position:'bottom'}},
-        scales:{ y:{beginAtZero:true, position:'left', title:{display:true,text:'Peças'}},
-          y1:{beginAtZero:true, position:'right', grid:{drawOnChartArea:false}, title:{display:true,text:'Horas'}} }}
-    });
+    if(!hr.maquinas.length){
+      ctx1.parentElement.innerHTML='<div class="empty" style="padding:50px;"><i class="bi bi-inbox"></i><p>Sem dados no período.</p></div>';
+    }else{
+      const paletaDia=[azul,verde,amber,violet,sky,red,'#e58a00','#9b7bff','#48b06e','#0f4c81'];
+      const fmtDia=d=>d.split('-').reverse().slice(0,2).join('/');
+      const porDia = hr.por_dia.length>1 && hr.por_dia.length<=10;
+      const datasets = porDia
+        ? hr.por_dia.map((d,i)=>({label:fmtDia(d.dia), data:d.horas, backgroundColor:paletaDia[i%paletaDia.length], borderRadius:4, stack:'h'}))
+        : [{label:'Horas reportadas', data:hr.total, backgroundColor:azul, borderRadius:6}];
+      charts.dia = new Chart(ctx1, {
+        type:'bar',
+        data:{ labels: hr.maquinas, datasets },
+        options:{responsive:true, maintainAspectRatio:false,
+          plugins:{legend:{display:porDia, position:'bottom'},
+            tooltip:{callbacks:{
+              label:c=>c.dataset.label+': '+numBR(c.raw,2)+' h',
+              footer:its=>{ const i=its[0].dataIndex;
+                return 'Total: '+numBR(hr.total[i],2)+' h · '+fmt(hr.pecas[i])+' peças'; }
+            }}},
+          scales:{ x:{stacked:porDia, title:{display:true,text:'Máquinas'}},
+            y:{stacked:porDia, beginAtZero:true, title:{display:true,text:'Horas reportadas (h)'}} }}
+      });
+    }
   }
   // Motivos de pausa
   const mp = j.motivos_pausa || [];

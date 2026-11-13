@@ -199,10 +199,17 @@ Desempenho      = peças produzidas ÷ (meta pç/h × horas produtivas)   [limit
 Qualidade       = (produzidas − refugo) ÷ produzidas
 ```
 
-A **meta de peças/hora** é resolvida por prioridade, do mais específico ao mais
-geral: **peça (código/material) → máquina → padrão global**. Ou seja, a meta da
-peça vale primeiro (cada peça tem seu tempo); se a peça não tiver meta, usa-se a
-meta da máquina; se a máquina não tiver, o padrão global de Configurações.
+A **meta de peças/hora** é **automática**: vem da planilha de **Tempos do SAP**
+(coluna Máquina, min/peça) — `meta pç/h = 60 ÷ tempo Máquina`. É recalculada
+sempre com a planilha em uso, então atualizar os Tempos do SAP atualiza o
+Desempenho/OEE (inclusive dos apontamentos já finalizados). Só quando a peça
+**não tem tempo no SAP** vale a prioridade manual: **peça (código/material) →
+máquina → padrão global**.
+
+O gráfico **Produção por dia** do Painel Gerencial mostra as **máquinas no eixo
+X** e as **horas reportadas** (`tempo do item × quantidade ÷ 60`) no eixo Y —
+empilhadas por dia quando o período tem mais de um dia. Todos os gráficos têm o
+botão **Expandir** (tela cheia; Esc fecha).
 - Metas por peça: **Admin → Metas por peça** (`/admin/metas`).
 - Meta por máquina: **Admin → Máquinas**.
 - Padrão global: **Admin → Configurações**.

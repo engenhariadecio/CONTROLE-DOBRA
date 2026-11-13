@@ -24,6 +24,7 @@ import json
 import hashlib
 import mimetypes
 import threading
+import time
 from datetime import datetime, timedelta, date as ddate
 from functools import wraps
 
@@ -646,12 +647,21 @@ def _config_pronto():
         return False
 
 
+_centro_cache = {'t': 0.0, 'v': None}
+
+
 def get_centro_por_setor():
+    # cache curto (5 s): a meta automática consulta isto a cada apontamento
+    agora = time.time()
+    if _centro_cache['v'] is not None and agora - _centro_cache['t'] < 5:
+        return _centro_cache['v']
     try:
         m = cfg_get('centro_por_setor', None)
     except Exception:  # noqa: BLE001
         m = None
-    return m if isinstance(m, dict) and m else dict(CENTRO_POR_SETOR_PADRAO)
+    v = m if isinstance(m, dict) and m else dict(CENTRO_POR_SETOR_PADRAO)
+    _centro_cache['t'], _centro_cache['v'] = agora, v
+    return v
 
 
 def tempo_sap_unitario(codigo, setor):
@@ -667,6 +677,13 @@ def tempo_sap_unitario(codigo, setor):
         # procura em qualquer centro
         achados = [d[cod]['min'] for d in _tempos.values() if cod in d]
     return min(achados) if achados else None
+
+
+def meta_sap_pph(codigo, setor):
+    """Meta automática de peças/hora a partir dos Tempos do SAP:
+    60 min ÷ tempo Máquina (min/peça). Devolve 0.0 quando a peça não tem tempo."""
+    t = tempo_sap_unitario(codigo, setor)
+    return (60.0 / t) if (t and t > 0) else 0.0
 
 
 def descricao_por_codigo(codigo):
@@ -843,8 +860,21 @@ class Apontamento(Base):
         return max(0.0, bruto - self.pausa_total_seg(agora))
 
     def meta_efetiva(self, meta_padrao=0):
-        """Meta de peças/hora vigente: a do apontamento, ou o padrão global."""
-        return float(self.meta_pph or 0) or float(meta_padrao or 0)
+        """Meta de peças/hora vigente. Prioridade:
+        1) automática dos Tempos do SAP (60 ÷ tempo Máquina em min/peça) — sempre
+           recalculada com a planilha em uso, então o Desempenho acompanha o SAP;
+        2) a meta gravada no apontamento (peça/máquina cadastradas);
+        3) o padrão global."""
+        return (meta_sap_pph(self.codigo, self.setor)
+                or float(self.meta_pph or 0) or float(meta_padrao or 0))
+
+    def horas_reportadas(self):
+        """Horas reportadas (padrão SAP): tempo do item (min/pç) × quantidade ÷ 60.
+        None quando a peça não tem tempo na planilha de Tempos do SAP."""
+        t = tempo_sap_unitario(self.codigo, self.setor)
+        if not t or t <= 0:
+            return None
+        return t * (self.quantidade_produzida or 0) / 60.0
 
     def oee(self, agora=None, meta_padrao=0):
         agora = agora or datetime.utcnow()
@@ -2043,15 +2073,16 @@ def api_iniciar():
         if aberto:
             return jsonify({'ok': False, 'erro': 'Já existe apontamento em andamento nesta máquina.'}), 409
 
-        # Meta de peças/hora vigente. Prioridade: PEÇA (código) > máquina > padrão.
+        # Meta de peças/hora vigente. Prioridade: tempo SAP (60 ÷ min/peça) >
+        # PEÇA (código) > máquina > padrão.
         codigo_op = (d.get('codigo') or '').strip()
         meta_peca = 0.0
         if codigo_op:
             mp = db.query(MetaPeca).filter_by(codigo=codigo_op).first()
             if mp:
                 meta_peca = float(mp.pph or 0)
-        meta_pph = (_float(d.get('meta_pph'), 0) or meta_peca
-                    or float(m.meta_pph or 0) or get_meta_pph_padrao())
+        meta_pph = (_float(d.get('meta_pph'), 0) or meta_sap_pph(codigo_op, m.setor)
+                    or meta_peca or float(m.meta_pph or 0) or get_meta_pph_padrao())
         ap = Apontamento(
             estado='produzindo', maquina_id=m.id, maquina_nome=m.nome, setor=m.setor,
             operador_nome=operador,
@@ -2266,6 +2297,10 @@ def api_dashboard():
         # produção teórica (p/ desempenho): Σ meta_efetiva * horas produtivas
         total_teorico = sum(a.meta_efetiva(meta_padrao) * ((a.producao_seg or 0) / 3600)
                             for a in finalizados)
+        # peças que entram no desempenho: só as de apontamentos com meta
+        # (peça sem tempo SAP e sem meta não tem teórico — não pode inflar o índice)
+        total_pecas_meta = sum((a.quantidade_produzida or 0) for a in finalizados
+                               if a.meta_efetiva(meta_padrao) > 0)
         n = len(finalizados)
 
         eficiencia = 0.0
@@ -2277,7 +2312,7 @@ def api_dashboard():
         oee_geral = calc_oee(total_prod_seg, total_pausa_seg, total_pecas,
                              total_refugo, 0)
         # desempenho agregado usa a produção teórica somada
-        desemp_geral = min(total_pecas / total_teorico, 1.0) if total_teorico > 0 else None
+        desemp_geral = min(total_pecas_meta / total_teorico, 1.0) if total_teorico > 0 else None
         disp_geral = oee_geral['disponibilidade']
         qual_geral = oee_geral['qualidade']
         if None in (disp_geral, desemp_geral, qual_geral):
@@ -2287,14 +2322,23 @@ def api_dashboard():
 
         def _novo_grupo(k):
             return {'nome': k, 'pecas': 0, 'prod_seg': 0.0, 'pausa_seg': 0.0,
-                    'ops': 0, 'refugo': 0, 'teorico': 0.0}
+                    'ops': 0, 'refugo': 0, 'teorico': 0.0, 'pecas_meta': 0,
+                    'horas_rep': 0.0, 'ops_sem_tempo': 0}
 
         def _acum(r, a):
             r['pecas'] += a.quantidade_produzida or 0
             r['prod_seg'] += a.producao_seg or 0
             r['pausa_seg'] += a.pausa_total_seg()
             r['refugo'] += a.refugo or 0
-            r['teorico'] += a.meta_efetiva(meta_padrao) * ((a.producao_seg or 0) / 3600)
+            meta_a = a.meta_efetiva(meta_padrao)
+            r['teorico'] += meta_a * ((a.producao_seg or 0) / 3600)
+            if meta_a > 0:
+                r['pecas_meta'] += a.quantidade_produzida or 0
+            hr = a.horas_reportadas()
+            if hr is None:
+                r['ops_sem_tempo'] += 1
+            else:
+                r['horas_rep'] += hr
             r['ops'] += 1
 
         # Por operador
@@ -2324,6 +2368,37 @@ def api_dashboard():
             r['pecas'] += a.quantidade_produzida or 0
             r['prod_h'] += (a.producao_seg or 0) / 3600
 
+        # Horas reportadas por máquina e por dia
+        # (tempo do item no SAP × quantidade ÷ 60) — gráfico "Produção por dia"
+        rep = {}          # { maquina: { dia: horas } }
+        rep_pecas = {}    # { maquina: peças }
+        dias_rep = set()
+        ops_sem_tempo = 0
+        for a in finalizados:
+            maq = a.maquina_nome or '—'
+            dloc = (a.inicio - timedelta(hours=FUSO_LOCAL_HORAS)).date().isoformat() if a.inicio else '—'
+            rep.setdefault(maq, {})
+            rep_pecas[maq] = rep_pecas.get(maq, 0) + (a.quantidade_produzida or 0)
+            hr = a.horas_reportadas()
+            if hr is None:
+                ops_sem_tempo += 1
+                continue
+            dias_rep.add(dloc)
+            rep[maq][dloc] = rep[maq].get(dloc, 0.0) + hr
+        # eixo X: máquinas ativas do filtro (na ordem do cadastro) + as que têm dados
+        maqs_x = [filtro_maq] if filtro_maq else list(maquinas_setor)
+        maqs_x += [m for m in rep if m not in maqs_x]
+        dias_x = sorted(dias_rep)
+        horas_reportadas = {
+            'maquinas': maqs_x,
+            'dias': dias_x,
+            'total': [round(sum(rep.get(m, {}).values()), 2) for m in maqs_x],
+            'pecas': [rep_pecas.get(m, 0) for m in maqs_x],
+            'por_dia': [{'dia': d, 'horas': [round(rep.get(m, {}).get(d, 0.0), 2) for m in maqs_x]}
+                        for d in dias_x],
+            'ops_sem_tempo': ops_sem_tempo,
+        }
+
         def arr(d, chave_ord):
             lst = list(d.values())
             for r in lst:
@@ -2331,9 +2406,10 @@ def api_dashboard():
                     r['prod_min'] = round(r['prod_seg'] / 60, 1)
                     r['prod_h'] = round(r['prod_seg'] / 3600, 2)
                     r['pausa_min'] = round(r['pausa_seg'] / 60, 1)
+                    r['horas_rep'] = round(r.get('horas_rep', 0.0), 2)
                     r['pph'] = round(r['pecas'] / (r['prod_seg'] / 3600), 1) if r['prod_seg'] > 0 and r['pecas'] else 0.0
                     disp = (r['prod_seg'] / (r['prod_seg'] + r['pausa_seg'])) if (r['prod_seg'] + r['pausa_seg']) > 0 else None
-                    desemp = min(r['pecas'] / r['teorico'], 1.0) if r['teorico'] > 0 else None
+                    desemp = min(r['pecas_meta'] / r['teorico'], 1.0) if r['teorico'] > 0 else None
                     qual = ((r['pecas'] - r['refugo']) / r['pecas']) if r['pecas'] > 0 else None
                     oee = disp * desemp * qual if None not in (disp, desemp, qual) else None
                     r['disponibilidade'] = _pct(disp)
@@ -2379,6 +2455,7 @@ def api_dashboard():
             'por_maquina': arr(por_maq, 'pecas'),
             'motivos_pausa': motivos_lst,
             'por_dia': por_dia_lst,
+            'horas_reportadas': horas_reportadas,
             'em_andamento': [a.to_dict(agora, meta_padrao) for a in em_andamento],
             'ultimos': [_ultimo_com_tempos(a, agora, meta_padrao) for a in finalizados[:40]],
             'tempos_carregados': _tempos_status.get('carregada', False),

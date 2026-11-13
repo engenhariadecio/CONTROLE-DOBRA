@@ -184,7 +184,7 @@ textarea.input{resize:vertical;min-height:70px;}
 .oee-wrap{display:grid;grid-template-columns:210px 1fr;gap:26px;align-items:center;}
 @media(max-width:720px){.oee-wrap{grid-template-columns:1fr;}}
 .oee-gauge{position:relative;width:200px;height:200px;margin:0 auto;}
-.oee-gauge canvas{position:relative;z-index:1;}
+.oee-gauge canvas{position:relative;z-index:1;width:100%!important;height:100%!important;}
 .oee-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;}
 .oee-num{font-size:2.5rem;font-weight:800;letter-spacing:-1.5px;line-height:1;color:#fff;}
 .oee-lab{font-size:.68rem;font-weight:800;letter-spacing:.18em;text-transform:uppercase;color:rgba(255,255,255,.7);margin-top:6px;}
@@ -436,3 +436,30 @@ table.tbl tbody tr:last-child td{border-bottom:none;}
 .arq-hist table.tbl{font-size:.8rem;min-width:480px;}
 .arq-hist .arq-hist-nome{min-width:190px;word-break:break-word;}
 .arq-hist table.tbl td,.arq-hist table.tbl th{padding:8px 10px;}
+
+/* ── Expandir gráficos (tela cheia) ─────────────────────────────── */
+.card-title-sub{font-weight:600;font-size:.76rem;color:var(--slate,#64748b);}
+.btn-expand{margin-left:auto;flex:none;width:34px;height:34px;border-radius:10px;border:1px solid var(--line);
+  background:#fff;color:var(--brand-a);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-size:.95rem;}
+.btn-expand:hover{background:var(--brand-a);color:#fff;border-color:transparent;}
+.btn-expand i,.card-title .btn-expand i{color:inherit;}
+.oee-card .btn-expand{background:rgba(255,255,255,.16);border-color:transparent;color:#fff;}
+.oee-card .btn-expand:hover{background:#fff;color:var(--brand-a);}
+.chart-nota{margin-top:10px;font-size:.78rem;font-weight:600;color:var(--slate,#64748b);display:flex;align-items:center;gap:7px;}
+body.tem-expandido{overflow:hidden;}
+.card.card-expandido{position:fixed;inset:0;z-index:150;margin:0;border-radius:0;min-height:0;
+  display:flex;flex-direction:column;padding:22px 26px;overflow:auto;}
+.card-expandido .card-title{font-size:1.3rem;flex:none;}
+.card-expandido .chart-box{flex:1;height:auto;min-height:260px;}
+.card-expandido .chart-nota{flex:none;}
+.oee-card.card-expandido .oee-wrap{flex:1;grid-template-columns:minmax(260px,46vh) 1fr;gap:48px;}
+.oee-card.card-expandido .oee-gauge{width:min(46vh,80vw);height:min(46vh,80vw);}
+.oee-card.card-expandido .oee-num{font-size:4.4rem;}
+.oee-card.card-expandido .oee-lab{font-size:1rem;}
+.oee-card.card-expandido .oee-meta{font-size:1rem;}
+.oee-card.card-expandido .oee-pillar-name{font-size:1.15rem;}
+.oee-card.card-expandido .oee-pillar-name small{font-size:.9rem;}
+.oee-card.card-expandido .oee-pillar-val{font-size:1.7rem;}
+.oee-card.card-expandido .oee-bar{height:18px;border-radius:9px;}
+.oee-card.card-expandido .oee-pillars{gap:30px;}
+@media(max-width:720px){.oee-card.card-expandido .oee-wrap{grid-template-columns:1fr;}}
